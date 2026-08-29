@@ -5,7 +5,7 @@
 TravelMatch è una piccola app da viaggio "vera" — ispirata a WeRoad, G Adventures e
 Intrepid Travel — che ti aiuta a scegliere la meta giusta per la tua prossima
 vacanza, con un occhio speciale a **Natale 2026 / Capodanno 2027**. Funziona
-interamente offline, con un dataset locale di 67 destinazioni reali e un motore
+interamente offline, con un dataset locale di 79 destinazioni reali e un motore
 di raccomandazione scritto da zero (nessuna chiamata a servizi esterni, nessuna AI
 generativa: solo un buon algoritmo di scoring).
 
@@ -37,7 +37,7 @@ travelmatch/
 ├── recommender.py          # motore di raccomandazione per singola destinazione
 ├── trip_builder.py         # motore Trip Builder (itinerari multi-tappa) + confronto viaggi
 ├── trip_presentation.py    # spiegazioni, timeline ed export testuale dei viaggi combinati
-├── destinations.py         # dataset locale (67 destinazioni)
+├── destinations.py         # dataset locale (79 destinazioni)
 ├── trip_routes.py          # rotte tra destinazioni + trip template validati
 ├── utils.py                # costanti del questionario, Travel DNA, formattazione, salvataggio
 ├── insights.py             # Travel Style, avvisi contestuali, facilità organizzativa, anti-FOMO
@@ -254,8 +254,11 @@ Per ogni itinerario vengono calcolati **separatamente**:
    25% + budget_feasibility 15% + season_compatibility 10%`, con penalità
    aggiuntive se i trasferimenti superano il 30-35% del tempo ideale di
    viaggio o se il numero di tappe eccede le linee guida per la durata scelta.
-   Solo itinerari con Feasibility ≥ 75 vengono mostrati (soglia che scende a
-   60 come compromesso se non ce ne sono abbastanza, con avviso esplicito).
+   Solo itinerari con Feasibility ≥ 75 vengono usati per selezionare i
+   risultati (soglia che scende a 60 come compromesso se non ce ne sono
+   abbastanza, con avviso esplicito) — **resta un dettaglio puramente
+   interno del motore**: il punteggio numerico non compare mai nell'interfaccia
+   (card, confronti, export, PDF), solo l'effetto delle sue scelte.
 3. **Travel Efficiency Score** — `giorni di esplorazione / (giorni di
    esplorazione + giorni-equivalenti di trasferimento) × 100`.
 

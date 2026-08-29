@@ -129,8 +129,14 @@ def inject_css(christmas_mode: bool = False) -> None:
         }}
         /* !important necessario: lo stile tipografico integrato di
         Streamlit usa selettori più specifici dei nostri (es. scoped ai
-        propri contenitori), quindi vincerebbe altrimenti la cascata. */
-        .stApp, .stApp p, .stApp span, .stApp label, .stApp li {{
+        propri contenitori), quindi vincerebbe altrimenti la cascata.
+        Escludiamo esplicitamente [data-testid="stIconMaterial"]: sono le
+        icone (freccine, download, ecc.) disegnate da Streamlit tramite un
+        font a legature (il testo "keyboard_arrow_right" ecc. diventa un
+        glifo solo con QUEL font) — forzare Inter anche lì rompe le
+        legature e mostra il nome dell'icona come testo sovrapposto invece
+        del disegno. */
+        .stApp, .stApp p, .stApp span:not([data-testid="stIconMaterial"]), .stApp label, .stApp li {{
             font-family: {body_font} !important;
         }}
         .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5 {{
@@ -1693,7 +1699,8 @@ def render_sidebar() -> None:
             st.rerun()
 
         st.divider()
-        st.caption("TravelMatch v2.0 — dataset locale, 67 destinazioni + Trip Builder, nessuna connessione richiesta.")
+        n_destinations = len(load_destinations_df())
+        st.caption(f"TravelMatch v2.0 — dataset locale, {n_destinations} destinazioni + Trip Builder, nessuna connessione richiesta.")
 
 
 # ---------------------------------------------------------------------------
