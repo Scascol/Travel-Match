@@ -86,7 +86,6 @@ from utils import (
     social_dots,
     travel_dna_description,
 )
-
 st.set_page_config(
     page_title="TravelMatch — dove andare davvero in vacanza",
     page_icon="✈️",
