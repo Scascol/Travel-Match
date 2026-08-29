@@ -25,14 +25,15 @@ BUDGET_BANDS = {
 PEOPLE_OPTIONS = ["Solo", "Coppia", "Amici", "Famiglia", "Gruppo"]
 
 PERIOD_OPTIONS = [
-    "🎄 Natale",
-    "🎆 Capodanno",
-    "🎄🎆 Natale + Capodanno",
     "🌸 Primavera",
     "☀️ Estate",
     "🍂 Autunno",
+    "❄️ Inverno",
     "🏃 Weekend",
     "📅 Date personalizzate",
+    "🎄 Natale",
+    "🎆 Capodanno",
+    "🎄🎆 Natale + Capodanno",
 ]
 
 CHRISTMAS_PERIODS = {"🎄 Natale", "🎆 Capodanno", "🎄🎆 Natale + Capodanno"}

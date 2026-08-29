@@ -4,10 +4,13 @@
 
 TravelMatch è una piccola app da viaggio "vera" — ispirata a WeRoad, G Adventures e
 Intrepid Travel — che ti aiuta a scegliere la meta giusta per la tua prossima
-vacanza, con un occhio speciale a **Natale 2026 / Capodanno 2027**. Funziona
-interamente offline, con un dataset locale di 79 destinazioni reali e un motore
-di raccomandazione scritto da zero (nessuna chiamata a servizi esterni, nessuna AI
-generativa: solo un buon algoritmo di scoring).
+vacanza, **in qualunque periodo dell'anno**: weekend, primavera, estate, autunno,
+inverno o le feste di Natale/Capodanno sono tutti trattati allo stesso modo dal
+motore, che dà un piccolo boost coerente solo quando scegli esplicitamente un
+periodo festivo (vedi sezione 3). Funziona interamente offline, con un dataset
+locale di 79 destinazioni reali e un motore di raccomandazione scritto da zero
+(nessuna chiamata a servizi esterni, nessuna AI generativa: solo un buon algoritmo
+di scoring).
 
 Oltre a suggerire **singole destinazioni**, TravelMatch è anche un **Trip
 Builder**: propone itinerari realistici di 2-3 tappe (es. "Istanbul & Cappadocia",
@@ -109,10 +112,15 @@ comportamento di tutta l'app.
 Ogni componente confronta le preferenze dell'utente con i dati della
 destinazione:
 
-- **budget** — quanto il costo totale stimato (volo+hotel+cibo+attività) sta
-  dentro (o fuori) al budget indicato. Restare comodamente sotto budget dà un
-  punteggio alto; sforare oltre ~15% lo fa crollare rapidamente (vedi hard
-  constraint sotto).
+- **budget** — confronta il budget indicato con lo scenario **Economico**
+  della destinazione (`total_cost_min`, cioè hostel/1-2 stelle: il "da X €"
+  mostrato nelle card), **mai** con la media o con lo scenario Comodo. Restare
+  comodamente sotto budget dà un punteggio alto; sforare oltre ~15% lo fa
+  crollare rapidamente (vedi hard constraint sotto). Scegliere sempre il
+  minimo del range evita che un budget contenuto escluda ingiustamente mete
+  che restano raggiungibili scegliendo l'alloggio più economico — gli scenari
+  Medio ed Elevato (vedi sezione 9) restano solo informativi, non entrano mai
+  nello score né nell'hard constraint.
 - **mood** — media tra affinità mood (natura, città, romantico...) e overlap
   dei tag speciali selezionati (mercatini di Natale, trekking, aurora
   boreale...).
@@ -328,9 +336,13 @@ scoring. Ogni feature è un modulo leggero che legge dati già calcolati.
   - Stesso contenuto in entrambi i formati: il PDF è solo un layer di formattazione sopra il testo, non una fonte separata.
 
 - **Breakdown costi a 3 scenari + avviso budget** (`utils.cost_scenarios`, `budget_warning_message`)
-  - Economico (minimo del range) · Medio (punto medio) · Comodo (massimo maggiorato del 15%).
+  - 🟢 Economico (hostel/1-2★, minimo del range — è anche l'unico scenario usato dallo scoring/hard
+    constraint, vedi sezione 3) · 🟡 Medio (3★/B&B, punto medio) · 🔴 Elevato (4-5★, massimo maggiorato
+    del 15%). Medio ed Elevato sono puramente informativi.
   - Avviso amichevole se lo scenario Medio sfora il budget di oltre il 15%.
   - Per i viaggi combinati il totale include già i trasferimenti (nessun calcolo separato).
+  - I range di costo (volo da Italia + hotel + cibo + attività, per la durata consigliata) sono stime
+    statiche calibrate su medie di mercato realistiche 2023-2025, non aggiornate dinamicamente.
 
 - **Spiegazione "Perché questa combinazione"** (`trip_presentation.generate_trip_explanation`)
   - 2-4 frasi generate dai dati reali dell'itinerario: tempo di trasferimento, Travel Efficiency, mood coverage, cluster geografico, punteggi per tappa.

@@ -530,8 +530,8 @@ def render_landing() -> None:
         <div class="tm-hero">
             <h1>✈️ TravelMatch</h1>
             <p>Dove dovresti andare <b>davvero</b> in vacanza? Rispondi a qualche domanda,
-            scopri il tuo Travel DNA e lascia che facciamo il resto — con un occhio speciale
-            a Natale 2026 e Capodanno 2027. 🎄</p>
+            scopri il tuo Travel DNA e lascia che facciamo il resto — per un weekend,
+            un'estate, le feste o qualunque periodo tu abbia in mente. ✈️</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -682,6 +682,10 @@ def render_questionnaire() -> None:
             )
         with c2:
             budget_scope = st.radio("Il budget è:", ["Per persona", "Totale per il gruppo"], index=0, key="q_budget_scope")
+        st.caption(
+            "Confrontiamo il tuo budget con lo scenario più economico di ogni meta (hostel/1-2★): "
+            "così vedi anche destinazioni che, scegliendo l'alloggio giusto, restano alla tua portata."
+        )
 
         st.markdown("##### 👥 Con chi parti?")
         people = st.radio(
@@ -700,14 +704,16 @@ def render_questionnaire() -> None:
         st.markdown("##### 📅 Periodo")
         period = st.selectbox(
             "Quando vuoi partire?", PERIOD_OPTIONS, key="q_period",
-            **_default_kwargs("q_period", index=2),
+            **_default_kwargs("q_period", index=PERIOD_OPTIONS.index("🏃 Weekend")),
         )
-        st.caption("Per Natale/Capodanno il riferimento è Natale 2026 / Capodanno 2027 (18 dic 2026 – 6 gen 2027).")
+        if period in CHRISTMAS_LIKE:
+            st.caption("Per Natale/Capodanno il riferimento è Natale 2026 / Capodanno 2027 (18 dic 2026 – 6 gen 2027).")
         date_range = None
         if period == "📅 Date personalizzate":
+            default_start = dt.date.today() + dt.timedelta(days=60)
             date_range = st.date_input(
                 "Seleziona le date del viaggio",
-                value=(dt.date(2026, 12, 24), dt.date(2027, 1, 2)),
+                value=(default_start, default_start + dt.timedelta(days=7)),
                 format="DD/MM/YYYY", key="q_date_range",
             )
 
@@ -865,10 +871,10 @@ def render_anti_fomo(lines: list[str]) -> None:
             st.markdown(f"- {line}")
 
 
-def _overage_label(scenario_medio: float, budget_max: float | None) -> str:
+def _overage_label(cost_econ: float, budget_max: float | None) -> str:
     if not budget_max or budget_max <= 0:
         return ""
-    overage_pct = round((scenario_medio - budget_max) / budget_max * 100)
+    overage_pct = round((cost_econ - budget_max) / budget_max * 100)
     return f" · +{overage_pct}% sul budget" if overage_pct > 0 else ""
 
 
@@ -876,7 +882,9 @@ def render_over_budget_destinations(over_budget: pd.DataFrame, budget_max: float
     """Sezione leggera e separata per le destinazioni oltre budget+buffer
     (vedi recommender.BUDGET_BUFFER_RATIO): non competono mai per i
     risultati principali, ma restano visibili qui con l'etichetta di quanto
-    sforano — mai nascoste, mai spacciate per un match dentro budget."""
+    sforano — mai nascoste, mai spacciate per un match dentro budget. Lo
+    sforamento è calcolato sullo scenario Economico (total_cost_min), lo
+    stesso usato dal motore per escluderle dai risultati principali."""
     if over_budget.empty:
         return
     with st.container(border=True):
@@ -884,10 +892,9 @@ def render_over_budget_destinations(over_budget: pd.DataFrame, budget_max: float
         st.markdown("#### 💡 Idee oltre budget")
         st.caption("Non entrano nel budget scelto, ma potrebbero valere lo sforo.")
         for _, row in over_budget.iterrows():
-            scenario_medio = cost_scenarios(row["total_cost_min"], row["total_cost_max"])["medio"]
             st.markdown(
                 f"**{row['name']}**, {row['country']} — {row['match_score']:.0f}% match · "
-                f"{format_price(scenario_medio)}{_overage_label(scenario_medio, budget_max)}"
+                f"Da {format_price(row['total_cost_min'])}{_overage_label(row['total_cost_min'], budget_max)}"
             )
 
 
@@ -901,21 +908,24 @@ def render_over_budget_trips(over_budget: pd.DataFrame, budget_max: float | None
         st.markdown("#### 💡 Idee di viaggio oltre budget")
         st.caption("Non entrano nel budget scelto, ma potrebbero valere lo sforo.")
         for _, trip in over_budget.iterrows():
-            scenario_medio = cost_scenarios(trip["total_cost_min"], trip["total_cost_max"])["medio"]
             route_label = " → ".join(trip["stop_names"])
             st.markdown(
                 f"**{trip['name']}** ({route_label}) — {trip['trip_match_score']:.0f}% match · "
-                f"{format_price(scenario_medio)}{_overage_label(scenario_medio, budget_max)}"
+                f"Da {format_price(trip['total_cost_min'])}{_overage_label(trip['total_cost_min'], budget_max)}"
             )
 
 
 def render_cost_scenarios(cost_min: float, cost_max: float) -> None:
+    """Economico (hostel/1-2 stelle) è lo scenario che conta per il match col
+    budget (vedi recommender._budget_match); Medio e Elevato sono qui solo a
+    scopo informativo, per farsi un'idea di cosa cambia con un alloggio
+    migliore — non influenzano mai lo score."""
     scenarios = cost_scenarios(cost_min, cost_max)
     st.markdown('<p class="tm-section-title">💰 Scenari di costo / persona</p>', unsafe_allow_html=True)
     st.markdown(
-        f'<div class="tm-scenario-row tm-scenario-economico"><span>🟢 Economico</span><span>{format_price(scenarios["economico"])}</span></div>'
-        f'<div class="tm-scenario-row tm-scenario-medio"><span>🟡 Medio</span><span>{format_price(scenarios["medio"])}</span></div>'
-        f'<div class="tm-scenario-row tm-scenario-comodo"><span>🔴 Comodo</span><span>{format_price(scenarios["comodo"])}</span></div>',
+        f'<div class="tm-scenario-row tm-scenario-economico"><span>🟢 Economico (hostel/1-2★)</span><span>{format_price(scenarios["economico"])}</span></div>'
+        f'<div class="tm-scenario-row tm-scenario-medio"><span>🟡 Medio (3★/B&B)</span><span>{format_price(scenarios["medio"])}</span></div>'
+        f'<div class="tm-scenario-row tm-scenario-comodo"><span>🔴 Elevato (4-5★)</span><span>{format_price(scenarios["comodo"])}</span></div>',
         unsafe_allow_html=True,
     )
 
@@ -985,7 +995,8 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
     cost_col, info_col = st.columns([1.3, 1])
     with cost_col:
         st.markdown('<p class="tm-section-title">💰 Costo indicativo / persona</p>', unsafe_allow_html=True)
-        st.markdown(f"**{format_price_range(row['total_cost_min'], row['total_cost_max'])}**")
+        st.markdown(f"**Da {format_price(row['total_cost_min'])}**")
+        st.caption(f"Range indicativo: {format_price_range(row['total_cost_min'], row['total_cost_max'])}")
         st.markdown(f'<p class="tm-cost-line">✈️ Volo: {format_price_range(row["flight_cost_min"], row["flight_cost_max"])}</p>', unsafe_allow_html=True)
         st.markdown(f'<p class="tm-cost-line">🏨 Hotel: {format_price_range(row["hotel_cost_min"], row["hotel_cost_max"])}</p>', unsafe_allow_html=True)
         st.markdown(f'<p class="tm-cost-line">🍝 Cibo: {format_price_range(row["food_cost_min"], row["food_cost_max"])}</p>', unsafe_allow_html=True)
@@ -1115,9 +1126,8 @@ def render_destination_card(row: pd.Series, rank: int | None = None, surprise: b
                 )
 
             metric_cols = st.columns(3)
-            scenario_medio = cost_scenarios(row["total_cost_min"], row["total_cost_max"])["medio"]
             with metric_cols[0]:
-                st.markdown(f"💰 **{format_price(scenario_medio)}** /persona")
+                st.markdown(f"💰 **Da {format_price(row['total_cost_min'])}** /persona")
             with metric_cols[1]:
                 st.markdown(f"🗓️ {row['days_min']}-{row['days_max']} giorni")
             with metric_cols[2]:
@@ -1162,7 +1172,8 @@ def _render_trip_detail_body(trip: pd.Series, rank: int | None, surprise: bool) 
     cost_col, info_col = st.columns([1.3, 1])
     with cost_col:
         st.markdown('<p class="tm-section-title">💰 Costo totale indicativo / persona</p>', unsafe_allow_html=True)
-        st.markdown(f"**{format_price_range(trip['total_cost_min'], trip['total_cost_max'])}**")
+        st.markdown(f"**Da {format_price(trip['total_cost_min'])}**")
+        st.caption(f"Range indicativo: {format_price_range(trip['total_cost_min'], trip['total_cost_max'])}")
         st.markdown(f'<p class="tm-cost-line">🔀 Trasferimenti: ~{trip["transfer_cost"]:.0f} €</p>', unsafe_allow_html=True)
         render_cost_scenarios(trip["total_cost_min"], trip["total_cost_max"])
     with info_col:
@@ -1271,9 +1282,8 @@ def render_trip_card(trip: pd.Series, rank: int | None = None, surprise: bool = 
                 )
 
             metric_cols = st.columns(3)
-            scenario_medio = cost_scenarios(trip["total_cost_min"], trip["total_cost_max"])["medio"]
             with metric_cols[0]:
-                st.markdown(f"💰 **{format_price(scenario_medio)}** /persona")
+                st.markdown(f"💰 **Da {format_price(trip['total_cost_min'])}** /persona")
             with metric_cols[1]:
                 st.markdown(f"🗓️ {trip['minimum_days']}-{trip['ideal_days']} giorni")
             with metric_cols[2]:

@@ -427,19 +427,20 @@ def _mood_coverage(stops: list, moods: list[str]) -> float:
     return sum(best_per_mood) / len(best_per_mood)
 
 
-def _budget_feasibility(total_cost_min: float, total_cost_max: float, budget_max: float | None) -> float:
+def _budget_feasibility(total_cost_min: float, budget_max: float | None) -> float:
     """Dentro budget -> punteggio alto con una lieve differenziazione (piu'
     economico = leggermente meglio, cosi' il raffinamento "Piu' economico" ha
     un segnale su cui lavorare anche tra itinerari gia' tutti nel budget).
     Fuori budget -> crollo rapido proporzionale allo sforamento. Nessun
-    budget massimo impostato -> valore neutro (70)."""
+    budget massimo impostato -> valore neutro (70). Usa lo scenario Economico
+    (total_cost_min), coerente con recommender._budget_match: Medio ed
+    Elevato restano solo informativi, mai parte dello score."""
     if not budget_max or budget_max <= 0:
         return 70.0
-    cost_mid = (total_cost_min + total_cost_max) / 2
-    if cost_mid <= budget_max:
-        ratio = cost_mid / max(budget_max, 1)
+    if total_cost_min <= budget_max:
+        ratio = total_cost_min / max(budget_max, 1)
         return max(BUDGET_WITHIN_BUDGET_FLOOR, 100.0 - ratio * BUDGET_WITHIN_BUDGET_PENALTY_RATIO)
-    overage = (cost_mid - budget_max) / budget_max
+    overage = (total_cost_min - budget_max) / budget_max
     return max(0.0, 100.0 - overage * BUDGET_OVERAGE_PENALTY_RATIO)
 
 
@@ -514,7 +515,7 @@ def score_trip(
 
     total_cost_min, total_cost_max = _compute_trip_cost(stops, edges)
     _budget_min, budget_max = prefs.get("budget_range", (None, None))
-    budget = _budget_feasibility(total_cost_min, total_cost_max, budget_max)
+    budget = _budget_feasibility(total_cost_min, budget_max)
 
     season = _season_compatibility(stops, prefs.get("period"), prefs.get("custom_months"))
 
@@ -689,8 +690,7 @@ def _build_trip_record(stops, edges, prefs, weights, boosts, trip_weights, adjus
 
     budget_max = prefs.get("budget_range", (None, None))[1]
     if budget_max:
-        cost_mid = (result["total_cost_min"] + result["total_cost_max"]) / 2
-        within_budget_buffer = cost_mid <= budget_max * (1 + BUDGET_BUFFER_RATIO)
+        within_budget_buffer = result["total_cost_min"] <= budget_max * (1 + BUDGET_BUFFER_RATIO)
     else:
         within_budget_buffer = True
 

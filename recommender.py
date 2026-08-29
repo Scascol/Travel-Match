@@ -106,6 +106,7 @@ PERIOD_TO_MONTHS = {
     "🌸 Primavera": [3, 4, 5],
     "☀️ Estate": [6, 7, 8],
     "🍂 Autunno": [9, 10, 11],
+    "❄️ Inverno": [12, 1, 2],
     "🏃 Weekend": None,
     "📅 Date personalizzate": None,
 }
@@ -158,13 +159,18 @@ def filter_by_area(df: pd.DataFrame, area_key: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def _budget_match(row, budget_min: float, budget_max: float) -> float:
+    """Confronta il budget scelto con lo scenario Economico della destinazione
+    (total_cost_min, cioè "da X €"): Medio ed Elevato restano solo scenari
+    informativi (vedi utils.cost_scenarios), non entrano mai nello score né
+    nell'hard constraint — così un budget basso non esclude ingiustamente una
+    meta che è comunque raggiungibile scegliendo la fascia più economica."""
     if budget_max is None or budget_max <= 0:
         return 70.0
-    cost_mid = (row["total_cost_min"] + row["total_cost_max"]) / 2
-    if cost_mid <= budget_max:
-        ratio = cost_mid / max(budget_max, 1)
+    cost_econ = row["total_cost_min"]
+    if cost_econ <= budget_max:
+        ratio = cost_econ / max(budget_max, 1)
         return max(70.0, 100.0 - ratio * 15.0)
-    overage = (cost_mid - budget_max) / budget_max
+    overage = (cost_econ - budget_max) / budget_max
     return max(0.0, 100.0 - overage * 140.0)
 
 
@@ -340,20 +346,20 @@ def _within_budget_buffer(row, budget_max: float | None) -> bool:
     BUDGET_BUFFER_RATIO oltre — la soglia che decide se una destinazione
     resta nei risultati principali (eventualmente segnalata come piccolo
     compromesso) o finisce nella sezione separata "Idee oltre budget".
-    Nessun budget massimo impostato -> sempre vero, nessun filtro."""
+    Nessun budget massimo impostato -> sempre vero, nessun filtro. Usa lo
+    scenario Economico (total_cost_min), coerente con _budget_match e
+    _meets_strict_criteria: mai la media, altrimenti un budget basso
+    escluderebbe mete raggiungibili scegliendo la fascia più economica."""
     if not budget_max or budget_max <= 0:
         return True
-    cost_mid = (row["total_cost_min"] + row["total_cost_max"]) / 2
-    return cost_mid <= budget_max * (1 + BUDGET_BUFFER_RATIO)
+    return row["total_cost_min"] <= budget_max * (1 + BUDGET_BUFFER_RATIO)
 
 
 def _meets_strict_criteria(row, prefs: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons = []
     budget_min, budget_max = prefs.get("budget_range", (None, None))
-    if budget_max:
-        cost_mid = (row["total_cost_min"] + row["total_cost_max"]) / 2
-        if cost_mid > budget_max:
-            reasons.append("budget")
+    if budget_max and row["total_cost_min"] > budget_max:
+        reasons.append("budget")
 
     max_flight_hours = prefs.get("max_flight_hours")
     if max_flight_hours and max_flight_hours < 999 and row["flight_hours"] > max_flight_hours:
