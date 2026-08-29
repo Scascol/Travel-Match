@@ -180,7 +180,7 @@ def trip_social_caption(trip: dict[str, Any]) -> str:
     route = " + ".join(trip.get("stop_names", []))
     return (
         f"✈️ {route}\n"
-        f"{trip['trip_match_score']:.0f}% di match, {trip['feasibility_score']:.0f}/100 di fattibilità ✨\n"
+        f"{trip['trip_match_score']:.0f}% di match ✨\n"
         f"{wow}\n"
         f"Itinerario scoperto con TravelMatch"
     )

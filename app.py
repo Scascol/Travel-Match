@@ -86,11 +86,15 @@ from utils import (
     social_dots,
     travel_dna_description,
 )
+
 st.set_page_config(
     page_title="TravelMatch — dove andare davvero in vacanza",
     page_icon="✈️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    # "auto" (non "expanded"): su desktop la sidebar resta aperta come prima,
+    # ma su schermi stretti (mobile) parte chiusa invece di coprire l'intero
+    # contenuto — Streamlit decide da solo in base alla larghezza reale.
+    initial_sidebar_state="auto",
 )
 
 PEOPLE_HEADCOUNT = {"Solo": 1, "Coppia": 2, "Amici": 4, "Famiglia": 4, "Gruppo": 6}
@@ -103,49 +107,139 @@ PEOPLE_HEADCOUNT = {"Solo": 1, "Coppia": 2, "Amici": 4, "Famiglia": 4, "Gruppo":
 def inject_css(christmas_mode: bool = False) -> None:
     accent = "#0EA5A0"
     accent_dark = "#0B7A75"
+    accent_light = "#E6F7F5"
     warm = "#F97316"
     festive = "#B91C1C" if christmas_mode else warm
+    ink = "#0F172A"
+    ink_muted = "#516273"
+    line = "#DCEAE8"  # neutro con lieve tinta verde-acqua (l'accento), non un grigio puro
+    display_font = "'Poppins', 'Trebuchet MS', sans-serif"
+    body_font = "'Inter', 'Segoe UI', sans-serif"
     st.markdown(
         f"""
         <style>
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap');
         /* Forziamo esplicitamente colori chiari/testo scuro: l'app è
         progettata per un tema chiaro (vedi .streamlit/config.toml), ma
         questa regola è una rete di sicurezza nel caso il browser/sistema
         forzi comunque una preferenza di colore diversa. */
         .stApp {{
             background: linear-gradient(180deg, #F8FBFB 0%, #F3F6F6 100%);
-            color: #0F172A;
+            color: {ink};
         }}
-        h1, h2, h3 {{
-            font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+        /* !important necessario: lo stile tipografico integrato di
+        Streamlit usa selettori più specifici dei nostri (es. scoped ai
+        propri contenitori), quindi vincerebbe altrimenti la cascata. */
+        .stApp, .stApp p, .stApp span, .stApp label, .stApp li {{
+            font-family: {body_font} !important;
         }}
+        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5 {{
+            font-family: {display_font} !important;
+            font-weight: 700 !important;
+            text-wrap: balance;
+        }}
+        hr {{
+            border: none;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, {line} 15%, {line} 85%, transparent);
+            margin: 1.7rem 0;
+        }}
+
+        /* --- Pulsanti: selettori data-testid stabili di Streamlit, non
+        classi generate automaticamente (che cambiano tra versioni). --- */
+        button[data-testid="stBaseButton-primary"] {{
+            font-family: {display_font};
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, {accent} 0%, {accent_dark} 100%);
+            box-shadow: 0 6px 16px -4px rgba(11, 122, 117, 0.45);
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }}
+        button[data-testid="stBaseButton-primary"]:hover {{
+            transform: translateY(-1px);
+            box-shadow: 0 8px 20px -4px rgba(11, 122, 117, 0.55);
+        }}
+        button[data-testid="stBaseButton-secondary"] {{
+            font-family: {display_font};
+            font-weight: 600;
+            border-radius: 12px;
+            border: 1.5px solid {line};
+            color: {accent_dark};
+            transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+        }}
+        button[data-testid="stBaseButton-secondary"]:hover {{
+            border-color: {accent};
+            background: {accent_light};
+            transform: translateY(-1px);
+        }}
+        div[data-testid="stExpander"] {{
+            border-radius: 12px !important;
+            border-color: {line} !important;
+        }}
+
+        /* --- Card: individuate via un marcatore invisibile inserito come
+        primo elemento di ogni st.container(border=True) (vedi
+        render_destination_card/render_trip_card/render_anti_fomo/ecc. in
+        app.py), non via le classi auto-generate di Streamlit — quelle
+        cambiano hash a ogni versione/build e romperebbero lo stile al
+        primo aggiornamento di Streamlit Cloud. */
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"]:first-child span.tm-card-marker-primary) {{
+            border: none !important;
+            border-radius: 18px !important;
+            background: #FFFFFF;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 10px 24px -10px rgba(15, 23, 42, 0.14);
+            padding: 1.5rem 1.7rem !important;
+            margin-bottom: 1.3rem;
+            transition: box-shadow 0.18s ease;
+        }}
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"]:first-child span.tm-card-marker-primary):hover {{
+            box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06), 0 16px 32px -10px rgba(15, 23, 42, 0.18);
+        }}
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"]:first-child span.tm-card-marker-light) {{
+            border: 1px solid {line} !important;
+            border-radius: 14px !important;
+            background: #FAFDFD;
+            box-shadow: none !important;
+            padding: 1.1rem 1.3rem !important;
+            margin-bottom: 1.1rem;
+        }}
+
         .tm-hero {{
             background: linear-gradient(120deg, {accent} 0%, {accent_dark} 55%, #0F172A 100%);
-            padding: 2.6rem 2.4rem;
-            border-radius: 22px;
+            padding: 3rem 2.6rem;
+            border-radius: 24px;
             color: white;
-            margin-bottom: 1.6rem;
-            box-shadow: 0 12px 30px rgba(15, 118, 110, 0.25);
+            margin-bottom: 1.8rem;
+            box-shadow: 0 20px 45px -14px rgba(11, 122, 117, 0.4);
         }}
         .tm-hero h1 {{
-            font-size: 2.5rem;
-            margin-bottom: 0.3rem;
+            font-family: {display_font};
+            font-size: 2.75rem;
+            font-weight: 800;
+            letter-spacing: -0.01em;
+            margin-bottom: 0.5rem;
             color: white;
         }}
         .tm-hero p {{
-            font-size: 1.15rem;
-            opacity: 0.92;
+            font-family: {body_font};
+            font-size: 1.18rem;
+            line-height: 1.55;
+            opacity: 0.94;
             margin-bottom: 0;
+            max-width: 640px;
         }}
         .tm-badge {{
             display: inline-block;
-            padding: 0.22rem 0.7rem;
+            font-family: {body_font};
+            padding: 0.3rem 0.85rem;
             border-radius: 999px;
-            background: #E6F7F5;
+            background: {accent_light};
             color: {accent_dark};
             font-size: 0.82rem;
             font-weight: 600;
-            margin: 0.12rem 0.28rem 0.12rem 0;
+            margin: 0.15rem 0.3rem 0.15rem 0;
             border: 1px solid #BFEAE6;
         }}
         .tm-badge-festive {{
@@ -155,30 +249,36 @@ def inject_css(christmas_mode: bool = False) -> None:
         }}
         .tm-match-pill {{
             display: inline-block;
-            padding: 0.35rem 1rem;
+            font-family: {display_font};
+            padding: 0.4rem 1.1rem;
             border-radius: 999px;
             font-weight: 800;
             font-size: 1.05rem;
             color: white;
+            box-shadow: 0 4px 10px -2px rgba(15, 23, 42, 0.28);
         }}
         .tm-card-title {{
-            font-size: 1.5rem;
+            font-family: {display_font};
+            font-size: 1.55rem;
             font-weight: 800;
+            letter-spacing: -0.01em;
             margin-bottom: 0;
         }}
         .tm-card-sub {{
-            color: #64748B;
+            font-family: {body_font};
+            color: {ink_muted};
             font-size: 0.95rem;
-            margin-top: -0.2rem;
+            margin-top: -0.15rem;
         }}
         .tm-section-title {{
+            font-family: {body_font};
             font-weight: 700;
             color: {accent_dark};
-            font-size: 0.95rem;
+            font-size: 0.82rem;
             text-transform: uppercase;
-            letter-spacing: 0.04em;
-            margin-top: 0.8rem;
-            margin-bottom: 0.2rem;
+            letter-spacing: 0.06em;
+            margin-top: 1rem;
+            margin-bottom: 0.35rem;
         }}
         .tm-cost-line {{
             font-size: 0.92rem;
@@ -708,6 +808,7 @@ def render_travel_dna() -> None:
     if not dna:
         return
     with st.container(border=True):
+        st.markdown('<span class="tm-card-marker tm-card-marker-primary"></span>', unsafe_allow_html=True)
         st.markdown("### 🧬 Il tuo Travel DNA")
         cols = st.columns(2)
         items = list(dna.items())
@@ -752,9 +853,54 @@ def render_anti_fomo(lines: list[str]) -> None:
     if not lines:
         return
     with st.container(border=True):
+        st.markdown('<span class="tm-card-marker tm-card-marker-light"></span>', unsafe_allow_html=True)
         st.markdown("**🤔 Ci abbiamo pensato anche noi**")
         for line in lines:
             st.markdown(f"- {line}")
+
+
+def _overage_label(scenario_medio: float, budget_max: float | None) -> str:
+    if not budget_max or budget_max <= 0:
+        return ""
+    overage_pct = round((scenario_medio - budget_max) / budget_max * 100)
+    return f" · +{overage_pct}% sul budget" if overage_pct > 0 else ""
+
+
+def render_over_budget_destinations(over_budget: pd.DataFrame, budget_max: float | None) -> None:
+    """Sezione leggera e separata per le destinazioni oltre budget+buffer
+    (vedi recommender.BUDGET_BUFFER_RATIO): non competono mai per i
+    risultati principali, ma restano visibili qui con l'etichetta di quanto
+    sforano — mai nascoste, mai spacciate per un match dentro budget."""
+    if over_budget.empty:
+        return
+    with st.container(border=True):
+        st.markdown('<span class="tm-card-marker tm-card-marker-light"></span>', unsafe_allow_html=True)
+        st.markdown("#### 💡 Idee oltre budget")
+        st.caption("Non entrano nel budget scelto, ma potrebbero valere lo sforo.")
+        for _, row in over_budget.iterrows():
+            scenario_medio = cost_scenarios(row["total_cost_min"], row["total_cost_max"])["medio"]
+            st.markdown(
+                f"**{row['name']}**, {row['country']} — {row['match_score']:.0f}% match · "
+                f"{format_price(scenario_medio)}{_overage_label(scenario_medio, budget_max)}"
+            )
+
+
+def render_over_budget_trips(over_budget: pd.DataFrame, budget_max: float | None) -> None:
+    """Stesso principio di render_over_budget_destinations, per i viaggi
+    combinati: mai mescolati ai risultati principali, sempre etichettati."""
+    if over_budget.empty:
+        return
+    with st.container(border=True):
+        st.markdown('<span class="tm-card-marker tm-card-marker-light"></span>', unsafe_allow_html=True)
+        st.markdown("#### 💡 Idee di viaggio oltre budget")
+        st.caption("Non entrano nel budget scelto, ma potrebbero valere lo sforo.")
+        for _, trip in over_budget.iterrows():
+            scenario_medio = cost_scenarios(trip["total_cost_min"], trip["total_cost_max"])["medio"]
+            route_label = " → ".join(trip["stop_names"])
+            st.markdown(
+                f"**{trip['name']}** ({route_label}) — {trip['trip_match_score']:.0f}% match · "
+                f"{format_price(scenario_medio)}{_overage_label(scenario_medio, budget_max)}"
+            )
 
 
 def render_cost_scenarios(cost_min: float, cost_max: float) -> None:
@@ -935,6 +1081,7 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
 def render_destination_card(row: pd.Series, rank: int | None = None, surprise: bool = False, compact: bool = True) -> None:
     dest_id = int(row["id"])
     with st.container(border=True):
+        st.markdown('<span class="tm-card-marker tm-card-marker-primary"></span>', unsafe_allow_html=True)
         header_cols = st.columns([5, 1.4])
         with header_cols[0]:
             medal = medal_for_rank(rank) if rank is not None else ("🎲" if surprise else "🔹")
@@ -990,16 +1137,6 @@ def render_destination_card(row: pd.Series, rank: int | None = None, surprise: b
             _render_destination_detail_body(row, rank, surprise, dest_id)
 
 
-def feasibility_tier_color(score: float) -> str:
-    if score >= 85:
-        return "#0F9D58"
-    if score >= 75:
-        return "#0EA5A0"
-    if score >= 60:
-        return "#F97316"
-    return "#94A3B8"
-
-
 def _render_trip_explanation(trip: pd.Series) -> None:
     st.markdown('<p class="tm-section-title">Perché fa per te</p>', unsafe_allow_html=True)
     st.write(generate_trip_explanation(trip))
@@ -1007,10 +1144,12 @@ def _render_trip_explanation(trip: pd.Series) -> None:
 
 def _render_trip_detail_body(trip: pd.Series, rank: int | None, surprise: bool) -> None:
     """Tutto ciò che sta sotto "Perché fa per te": avvisi, Travel Style,
-    costi+scenari, timeline, dettaglio Feasibility, checklist, export e
-    azioni — condiviso identico tra vista compatta (dentro l'expander) e
-    vista dettagliata (sempre visibile), stesso principio delle card
-    destinazione (vedi _render_destination_detail_body)."""
+    costi+scenari, timeline, checklist, export e azioni — condiviso identico
+    tra vista compatta (dentro l'expander) e vista dettagliata (sempre
+    visibile), stesso principio delle card destinazione (vedi
+    _render_destination_detail_body). Il Feasibility Score che regola quali
+    itinerari arrivano fin qui resta un dettaglio interno del motore (vedi
+    trip_builder.py): non compare da nessuna parte nell'interfaccia."""
     render_contextual_warnings(trip_warnings(trip, current_prefs()))
     render_travel_style_bars(travel_style_scores_for_stops(trip["stops"]))
 
@@ -1032,13 +1171,6 @@ def _render_trip_detail_body(trip: pd.Series, rank: int | None, surprise: bool) 
 
     st.markdown('<p class="tm-section-title">🗓️ Timeline del viaggio</p>', unsafe_allow_html=True)
     render_visual_timeline(trip)
-
-    with st.expander("📊 Dettaglio Feasibility Score"):
-        st.markdown(f"- Coerenza geografica: {trip['geographic_coherence']:.0f}/100")
-        st.markdown(f"- Fattibilità trasporti: {trip['transport_feasibility']:.0f}/100")
-        st.markdown(f"- Fattibilità tempo: {trip['time_feasibility']:.0f}/100")
-        st.markdown(f"- Fattibilità budget: {trip['budget_feasibility']:.0f}/100")
-        st.markdown(f"- Compatibilità stagione: {trip['season_compatibility']:.0f}/100")
 
     with st.expander("🎒 Checklist di viaggio"):
         checklist = build_trip_checklist(trip, current_prefs().get("period"))
@@ -1102,6 +1234,7 @@ def _render_trip_detail_body(trip: pd.Series, rank: int | None, surprise: bool) 
 
 def render_trip_card(trip: pd.Series, rank: int | None = None, surprise: bool = False, compact: bool = True) -> None:
     with st.container(border=True):
+        st.markdown('<span class="tm-card-marker tm-card-marker-primary"></span>', unsafe_allow_html=True)
         header_cols = st.columns([5, 1.4])
         with header_cols[0]:
             medal = medal_for_rank(rank) if rank is not None else ("🎲" if surprise else "✈️")
@@ -1115,10 +1248,7 @@ def render_trip_card(trip: pd.Series, rank: int | None = None, surprise: bool = 
                 unsafe_allow_html=True,
             )
 
-        feas_color = feasibility_tier_color(trip["feasibility_score"])
         st.markdown(
-            f'<span class="tm-badge" style="background:{feas_color}22; color:{feas_color}; border-color:{feas_color}55;">'
-            f'Feasibility {trip["feasibility_score"]:.0f}/100</span>'
             f'<span class="tm-badge">🧭 Travel Efficiency {trip["efficiency_score"]:.0f}%</span>'
             f'<span class="tm-badge">🏷️ {trip["difficulty"].capitalize()}</span>',
             unsafe_allow_html=True,
@@ -1258,7 +1388,7 @@ def render_trip_comparison(candidates_all: pd.DataFrame) -> None:
     trips = candidates_all[candidates_all["trip_id"].isin(trip_ids)]
     for _, trip in trips.iterrows():
         strengths = sorted(
-            [("Match", trip["trip_match_score"]), ("Feasibility", trip["feasibility_score"]),
+            [("Match", trip["trip_match_score"]),
              ("Travel Efficiency", trip["efficiency_score"]), ("Mood coverage", trip["mood_coverage"])],
             key=lambda kv: kv[1], reverse=True,
         )[:2]
@@ -1324,7 +1454,11 @@ def render_results() -> None:
     scored_all = bundle["scored_all"]
 
     if results.empty:
-        st.info("Non abbiamo trovato destinazioni che rispettino tutti i criteri scelti. Prova ad allargare un po' l'area geografica o il budget: il match perfetto probabilmente c'è, dobbiamo solo cercarlo con meno vincoli. 🧭")
+        if bundle.get("budget_exhausted"):
+            st.warning("Non abbiamo trovato mete entro o vicino al tuo budget. Ecco comunque alcune idee con budget un po' più alto.")
+            render_over_budget_destinations(bundle["over_budget"], current_budget_max())
+        else:
+            st.info("Non abbiamo trovato destinazioni che rispettino tutti i criteri scelti. Prova ad allargare un po' l'area geografica: il match perfetto probabilmente c'è, dobbiamo solo cercarlo con meno vincoli. 🧭")
         return
 
     if bundle["strict_count"] == 0:
@@ -1384,8 +1518,9 @@ def render_results() -> None:
                 st.session_state["shown_count"] = min(len(results), shown + 5)
                 st.rerun()
 
-        shown_ids = set(results.head(shown)["id"].tolist())
+        shown_ids = set(results.head(shown)["id"].tolist()) | set(bundle["over_budget"]["id"].tolist())
         render_anti_fomo(discarded_destination_alternatives(scored_all, shown_ids))
+        render_over_budget_destinations(bundle["over_budget"], current_budget_max())
 
         if show_trips:
             st.divider()
@@ -1394,7 +1529,11 @@ def render_results() -> None:
         st.markdown("### ✈️ Viaggi combinati")
         st.caption('"Più destinazioni" non significa viaggio migliore: qui trovi solo itinerari di 2-3 tappe davvero fattibili, non semplici combinazioni ad alto punteggio.')
         if trip_results.empty:
-            st.info("Per la durata e le preferenze scelte, un viaggio combinato non aggiungerebbe valore. Una singola destinazione ben vissuta resta la scelta migliore. 🎯")
+            if trip_bundle.get("budget_exhausted"):
+                st.warning("Non abbiamo trovato viaggi entro o vicino al tuo budget. Ecco comunque qualche idea con budget un po' più alto.")
+                render_over_budget_trips(trip_bundle["over_budget"], current_budget_max())
+            else:
+                st.info("Per la durata e le preferenze scelte, un viaggio combinato non aggiungerebbe valore. Una singola destinazione ben vissuta resta la scelta migliore. 🎯")
         else:
             if trip_bundle["used_compromise"]:
                 st.info(f"Solo {trip_bundle['strict_count']} itinerar{'io' if trip_bundle['strict_count'] == 1 else 'i'} rispetta pienamente i criteri di fattibilità. Ti mostriamo anche qualche alternativa con un piccolo compromesso.")
@@ -1406,9 +1545,10 @@ def render_results() -> None:
                     st.session_state["shown_trip_count"] = min(len(trip_results), shown_trips + 3)
                     st.rerun()
 
-            shown_trip_ids = set(trip_results.head(shown_trips)["trip_id"].tolist())
+            shown_trip_ids = set(trip_results.head(shown_trips)["trip_id"].tolist()) | set(trip_bundle["over_budget"]["trip_id"].tolist())
             candidates_all = trip_bundle["candidates_all"] if trip_bundle is not None else None
             render_anti_fomo(discarded_trip_alternatives(candidates_all, shown_trip_ids))
+            render_over_budget_trips(trip_bundle["over_budget"], current_budget_max())
 
     st.divider()
     render_refinement_bar()
@@ -1530,7 +1670,7 @@ def render_sidebar() -> None:
             trip_bundle = st.session_state.get("trip_bundle")
             trip_results = trip_bundle["results"] if trip_bundle is not None else pd.DataFrame()
             top_trip_summary = (
-                trip_results.head(3)[["trip_id", "name", "trip_match_score", "feasibility_score"]].to_dict("records")
+                trip_results.head(3)[["trip_id", "name", "trip_match_score"]].to_dict("records")
                 if not trip_results.empty else []
             )
             saved_state = {

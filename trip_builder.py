@@ -35,6 +35,7 @@ from typing import Any
 import pandas as pd
 
 from recommender import (
+    BUDGET_BUFFER_RATIO,
     MAX_WEIGHT,
     MOOD_TO_FIELD,
     _season_match,
@@ -686,6 +687,13 @@ def _build_trip_record(stops, edges, prefs, weights, boosts, trip_weights, adjus
     stop_ids = [int(s["id"]) for s in stops]
     template = _enrich_with_template(stop_ids)
 
+    budget_max = prefs.get("budget_range", (None, None))[1]
+    if budget_max:
+        cost_mid = (result["total_cost_min"] + result["total_cost_max"]) / 2
+        within_budget_buffer = cost_mid <= budget_max * (1 + BUDGET_BUFFER_RATIO)
+    else:
+        within_budget_buffer = True
+
     if template:
         name = template["name"]
         description = template["description"]
@@ -706,6 +714,7 @@ def _build_trip_record(stops, edges, prefs, weights, boosts, trip_weights, adjus
         "difficulty": difficulty,
         "stops": stops,
         "edges": edges,
+        "within_budget_buffer": within_budget_buffer,
         **result,
     }
 
@@ -719,6 +728,7 @@ def get_top_trips(
     adjustments: dict[str, float] | None = None,
     top_n: int = 3,
     exclude_stopsets: set[frozenset] | None = None,
+    over_budget_n: int = 3,
 ) -> dict[str, Any]:
     """Genera tutti i candidati (generate_trip_candidates, deterministico) e
     applica la soglia di Feasibility richiesta dalla spec: solo itinerari
@@ -729,26 +739,39 @@ def get_top_trips(
     l'utente). Se nemmeno il fallback basta, results contiene semplicemente
     meno di top_n righe — mai itinerari sotto la soglia di fallback.
 
+    Gli itinerari oltre BUDGET_BUFFER_RATIO sopra il budget scelto non
+    competono mai per "results" (stesso principio di recommender.
+    get_recommendations): finiscono solo in "over_budget", per una sezione
+    separata e leggera in fondo alla pagina.
+
     Ritorna sempre un dict con "results" (DataFrame, eventualmente vuoto),
-    "strict_count", "used_compromise" e "candidates_all" (l'intero pool
-    generato, usato da surprise_trip e dalla UI per il conteggio totale)."""
+    "strict_count", "used_compromise", "candidates_all" (l'intero pool
+    generato, usato da surprise_trip e dalla UI per il conteggio totale),
+    "over_budget" (i migliori itinerari oltre budget+buffer) e
+    "budget_exhausted" (True se nessun itinerario rientra nel budget+buffer)."""
     candidates = generate_trip_candidates(dest_df, prefs, weights, boosts, trip_weights, adjustments)
     if candidates.empty:
-        return {"results": candidates, "strict_count": 0, "used_compromise": False, "candidates_all": candidates}
+        return {
+            "results": candidates, "strict_count": 0, "used_compromise": False, "candidates_all": candidates,
+            "over_budget": candidates, "budget_exhausted": False,
+        }
 
     if exclude_stopsets:
         candidates = candidates[~candidates["stop_ids"].apply(lambda ids: frozenset(ids) in exclude_stopsets)]
 
-    strict = candidates[candidates["feasibility_score"] >= FEASIBILITY_THRESHOLD]
+    in_budget = candidates[candidates["within_budget_buffer"]]
+    over_budget = candidates[~candidates["within_budget_buffer"]].sort_values("overall_score", ascending=False)
+
+    strict = in_budget[in_budget["feasibility_score"] >= FEASIBILITY_THRESHOLD]
     strict_count = len(strict)
 
     if strict_count >= top_n:
         results = strict.head(top_n)
         used_compromise = False
     else:
-        fallback = candidates[
-            (candidates["feasibility_score"] >= FEASIBILITY_THRESHOLD_FALLBACK)
-            & (candidates["feasibility_score"] < FEASIBILITY_THRESHOLD)
+        fallback = in_budget[
+            (in_budget["feasibility_score"] >= FEASIBILITY_THRESHOLD_FALLBACK)
+            & (in_budget["feasibility_score"] < FEASIBILITY_THRESHOLD)
         ]
         remaining = top_n - strict_count
         results = pd.concat([strict, fallback.head(remaining)])
@@ -756,6 +779,8 @@ def get_top_trips(
 
     return {
         "results": results.reset_index(drop=True),
+        "over_budget": over_budget.head(over_budget_n).reset_index(drop=True),
+        "budget_exhausted": in_budget.empty,
         "strict_count": strict_count,
         "used_compromise": used_compromise,
         "candidates_all": candidates,
@@ -802,7 +827,6 @@ def surprise_trip(candidates_all: pd.DataFrame, exclude_stopsets: set[frozenset]
 
 TRIP_COMPARISON_COLUMNS: dict[str, str] = {
     "trip_match_score": "Match %",
-    "feasibility_score": "Feasibility",
     "efficiency_score": "Travel Efficiency %",
     "total_cost_min": "Costo min €",
     "total_cost_max": "Costo max €",

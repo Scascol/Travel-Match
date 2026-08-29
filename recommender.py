@@ -56,6 +56,13 @@ DEFAULT_BOOSTS: dict[str, float] = {
 
 MAX_WEIGHT = 0.6  # clamp di sicurezza per evitare pesi fuori scala dopo tanti click
 
+# Oltre questa soglia sopra il budget scelto, una destinazione non viene più
+# considerata "vicina al budget": esce dai risultati principali e finisce
+# solo nella sezione separata "Idee oltre budget" (vedi get_recommendations).
+# Tra 100% e questa soglia resta nei risultati principali, segnalata come
+# "Piccolo compromesso su: budget" (vedi _meets_strict_criteria).
+BUDGET_BUFFER_RATIO = 0.15
+
 REFINEMENT_EFFECTS: dict[str, dict[str, dict[str, float]]] = {
     "cheaper": {"weights": {"budget": 0.10}, "boosts": {}},
     "warmer": {"weights": {"climate": 0.08}, "boosts": {"warm": 0.14}},
@@ -328,12 +335,24 @@ def explain_match(row, components: dict[str, float], weights: dict[str, float], 
 # Motore principale
 # ---------------------------------------------------------------------------
 
+def _within_budget_buffer(row, budget_max: float | None) -> bool:
+    """True se la destinazione sta dentro il budget scelto, o al massimo
+    BUDGET_BUFFER_RATIO oltre — la soglia che decide se una destinazione
+    resta nei risultati principali (eventualmente segnalata come piccolo
+    compromesso) o finisce nella sezione separata "Idee oltre budget".
+    Nessun budget massimo impostato -> sempre vero, nessun filtro."""
+    if not budget_max or budget_max <= 0:
+        return True
+    cost_mid = (row["total_cost_min"] + row["total_cost_max"]) / 2
+    return cost_mid <= budget_max * (1 + BUDGET_BUFFER_RATIO)
+
+
 def _meets_strict_criteria(row, prefs: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons = []
     budget_min, budget_max = prefs.get("budget_range", (None, None))
     if budget_max:
         cost_mid = (row["total_cost_min"] + row["total_cost_max"]) / 2
-        if cost_mid > budget_max * 1.15:
+        if cost_mid > budget_max:
             reasons.append("budget")
 
     max_flight_hours = prefs.get("max_flight_hours")
@@ -358,6 +377,8 @@ def score_all(df: pd.DataFrame, prefs: dict[str, Any], weights: dict[str, float]
     if filtered.empty:
         filtered = df
 
+    budget_max = prefs.get("budget_range", (None, None))[1]
+
     records = []
     for _, row in filtered.iterrows():
         score, components, all_weights = score_destination(row, prefs, weights, boosts)
@@ -369,6 +390,7 @@ def score_all(df: pd.DataFrame, prefs: dict[str, Any], weights: dict[str, float]
             "meets_strict": meets_strict,
             "compromise_reasons": fail_reasons,
             "explanation": explanation,
+            "within_budget_buffer": _within_budget_buffer(row, budget_max),
         })
 
     scored = pd.DataFrame(records)
@@ -383,14 +405,23 @@ def get_recommendations(
     boosts: dict[str, float] | None = None,
     top_n: int = 5,
     exclude_ids: set[int] | None = None,
+    over_budget_n: int = 3,
 ) -> dict[str, Any]:
     """Restituisce le migliori destinazioni per le preferenze date.
 
+    Le destinazioni oltre BUDGET_BUFFER_RATIO sopra il budget scelto non
+    competono mai per i risultati principali (mai un match "forzato" fuori
+    budget): finiscono solo in "over_budget", una manciata delle migliori tra
+    quelle scartate, pensata per una sezione separata e leggera in fondo alla
+    pagina — mai per riempire silenziosamente i risultati principali.
+
     Ritorna un dizionario con:
-      - "results": DataFrame ordinato (fino a top_n righe)
-      - "strict_count": quante destinazioni rispettano tutti i criteri
-      - "used_compromise": True se sono stati inclusi risultati di compromesso
+      - "results": DataFrame ordinato (fino a top_n righe), sempre entro budget+buffer
+      - "strict_count": quante destinazioni (entro budget+buffer) rispettano tutti i criteri
+      - "used_compromise": True se sono stati inclusi risultati di compromesso (non di budget)
       - "scored_all": DataFrame con TUTTE le destinazioni valutate (per Sorprendimi/confronto)
+      - "over_budget": le migliori destinazioni oltre budget+buffer (DataFrame, eventualmente vuoto)
+      - "budget_exhausted": True se NESSUNA destinazione rientra nel budget+buffer
     """
     weights = weights or get_default_weights()
     boosts = boosts or get_default_boosts()
@@ -399,7 +430,10 @@ def get_recommendations(
     if exclude_ids:
         scored = scored[~scored["id"].isin(exclude_ids)]
 
-    strict = scored[scored["meets_strict"]]
+    in_budget = scored[scored["within_budget_buffer"]]
+    over_budget = scored[~scored["within_budget_buffer"]].sort_values("match_score", ascending=False)
+
+    strict = in_budget[in_budget["meets_strict"]]
     strict_count = len(strict)
 
     if strict_count >= top_n:
@@ -407,7 +441,7 @@ def get_recommendations(
         used_compromise = False
     else:
         remaining_slots = top_n - strict_count
-        compromise_pool = scored[~scored["meets_strict"]]
+        compromise_pool = in_budget[~in_budget["meets_strict"]]
         results = pd.concat([strict, compromise_pool.head(remaining_slots)])
         used_compromise = remaining_slots > 0 and not compromise_pool.empty
 
@@ -416,6 +450,8 @@ def get_recommendations(
         "strict_count": strict_count,
         "used_compromise": used_compromise,
         "scored_all": scored,
+        "over_budget": over_budget.head(over_budget_n).reset_index(drop=True),
+        "budget_exhausted": in_budget.empty,
     }
 
 

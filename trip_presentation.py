@@ -186,8 +186,7 @@ def export_trip_as_text(trip: dict[str, Any]) -> str:
         f"✈️ {trip['name']}",
         f"{' → '.join(trip.get('stop_names', []))}",
         "",
-        f"Match: {trip['trip_match_score']:.0f}%  ·  Feasibility: {trip['feasibility_score']:.0f}/100  ·  "
-        f"Travel Efficiency: {trip['efficiency_score']:.0f}%",
+        f"Match: {trip['trip_match_score']:.0f}%  ·  Travel Efficiency: {trip['efficiency_score']:.0f}%",
         "",
         generate_trip_explanation(trip),
         "",
