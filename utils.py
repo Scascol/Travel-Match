@@ -69,6 +69,52 @@ INTENSITY_OPTIONS = {
     "intense": "🥾 Intense",
 }
 
+# Etichette del ritmo di una meta/itinerario (destinations.pace). Stesse
+# chiavi di INTENSITY_OPTIONS — è voluto: l'intensità chiesta all'utente e il
+# ritmo della destinazione vivono sulla stessa scala, ed è ciò che permette a
+# recommender._pace_match di confrontarli direttamente.
+PACE_LABELS = {
+    "relaxed": "😌 Rilassato",
+    "dynamic": "🚶 Dinamico",
+    "intense": "🥾 Intenso",
+}
+
+PACE_DESCRIPTIONS = {
+    "relaxed": "Poche cose al giorno, tempi larghi",
+    "dynamic": "Un buon ritmo, senza correre",
+    "intense": "Giornate piene, si cammina parecchio",
+}
+
+# Modalità viaggiatore: derivata da "Con chi parti?" (PEOPLE_OPTIONS), più il
+# caso speciale "primo viaggio da solo/a" attivato dal quick-start dedicato.
+# Influenza socialità suggerita, tipo di alloggio e avvisi — mai lo scoring
+# di base, che resta guidato dalle risposte esplicite del questionario.
+TRAVELLER_MODE_BY_PEOPLE = {
+    "Solo": "solo",
+    "Coppia": "coppia",
+    "Amici": "gruppo",
+    "Gruppo": "gruppo",
+    "Famiglia": "famiglia",
+}
+
+TRAVELLER_MODE_LABELS = {
+    "solo": "🎒 In solitaria",
+    "primo_solo": "🧳 Primo viaggio da solo/a",
+    "coppia": "❤️ In coppia",
+    "gruppo": "🎉 In gruppo",
+    "famiglia": "👨‍👩‍👧 In famiglia",
+}
+
+# Suggerimento di alloggio per modalità: non è una prenotazione, è
+# l'inquadratura giusta per leggere gli scenari di costo.
+TRAVELLER_STAY_HINTS = {
+    "solo": "Ostello con camera privata o B&B centrale: costo contenuto e facile conoscere gente.",
+    "primo_solo": "Ostello ben recensito con camere private: il compromesso migliore tra sicurezza, costo e compagnia.",
+    "coppia": "B&B o piccolo hotel di charme: la differenza di prezzo su due persone si sente poco.",
+    "gruppo": "Appartamento intero: dividendo tra più persone scende sotto il costo di camere separate.",
+    "famiglia": "Appartamento con cucina: fa risparmiare sui pasti e dà spazio ai bambini.",
+}
+
 CLIMATE_OPTIONS = {
     "warm": "☀️ Caldo",
     "temperate": "🌤️ Temperato",
@@ -139,6 +185,7 @@ QUICK_START_OPTIONS = [
     ("social", "🎉 Voglio conoscere gente"),
     ("build_trip", "✈️ Costruisci il mio viaggio"),
     ("surprise", "🎲 Non ne ho idea. Sorprendimi."),
+    ("controlled_surprise", "🎯 Sorprendimi, ma con dei paletti"),
     ("first_solo_trip", "🧳 È il mio primo viaggio da solo/a"),
     ("gift_surprise", "🎁 Voglio regalare un viaggio (sorpresa)"),
 ]

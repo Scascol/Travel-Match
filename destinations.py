@@ -1746,6 +1746,142 @@ CLUSTER_BY_ID: dict[int, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Ritmo del viaggio (Rilassato / Dinamico / Intenso)
+#
+# Derivato, non autorato a mano: `activity_level` da solo è troppo schiacciato
+# (42 destinazioni su 79 valgono 2) per dare tre gruppi utili. Lo mescoliamo
+# con adventure_score e con l'inverso di relax_score, che insieme catturano
+# quanto una meta "chiede" al viaggiatore: Maldive/Salento restano Rilassato,
+# Roma/Bangkok Dinamico, Zermatt/Cortina/Reykjavik Intenso.
+# ---------------------------------------------------------------------------
+
+PACE_WEIGHTS = {"activity": 0.45, "adventure": 0.35, "non_relax": 0.20}
+
+# Soglie scelte per ottenere gruppi bilanciati sul dataset attuale
+# (32 Rilassato / 35 Dinamico / 12 Intenso): se il dataset cresce molto,
+# rivedere qui e non nei singoli record.
+PACE_THRESHOLD_RELAXED = 38.0
+PACE_THRESHOLD_INTENSE = 58.0
+
+PACE_RELAXED = "relaxed"
+PACE_DYNAMIC = "dynamic"
+PACE_INTENSE = "intense"
+
+
+def pace_label_for_score(pace_score: float) -> str:
+    """Etichetta di ritmo per un punteggio 0-100. Pubblica perché serve anche
+    al Trip Builder, che calcola il ritmo di un itinerario come media delle
+    tappe e ha bisogno delle stesse soglie — duplicarle significherebbe
+    vederle divergere alla prima modifica."""
+    if pace_score < PACE_THRESHOLD_RELAXED:
+        return PACE_RELAXED
+    if pace_score < PACE_THRESHOLD_INTENSE:
+        return PACE_DYNAMIC
+    return PACE_INTENSE
+
+
+# ---------------------------------------------------------------------------
+# Stagionalità dei costi
+#
+# I range di costo del dataset (total_cost_min/max) rappresentano una MEDIA
+# annuale. Questi fattori li spostano su/giù a seconda del mese, senza
+# toccare i dati autorati: `seasonal_cost_factor()` resta opzionale e chi non
+# passa un periodo continua a vedere esattamente i valori di prima
+# (retro-compatibilità piena).
+#
+# Il profilo stagionale è derivato dai punteggi già presenti: una meta da
+# mare rincara d'estate, una da sci a dicembre-febbraio, una città d'arte
+# oscilla molto meno. Valori indicativi su medie di mercato 2023-2025.
+# ---------------------------------------------------------------------------
+
+PROFILE_BEACH = "beach"
+PROFILE_SKI = "ski"
+PROFILE_TROPICAL = "tropical"
+PROFILE_WINTER_SUN = "winter_sun"
+PROFILE_CITY = "city"
+
+#                        gen   feb   mar   apr   mag   giu   lug   ago   set   ott   nov   dic
+SEASONAL_COST_FACTORS: dict[str, list[float]] = {
+    # Mare mediterraneo/atlantico: picco luglio-agosto, crollo in inverno.
+    PROFILE_BEACH: [0.80, 0.80, 0.85, 0.95, 1.05, 1.20, 1.35, 1.40, 1.10, 0.90, 0.80, 0.85],
+    # Montagna/neve: picco festività + alta stagione sciistica, minimo in estate.
+    PROFILE_SKI:   [1.30, 1.25, 1.15, 0.95, 0.80, 0.85, 0.95, 1.00, 0.85, 0.85, 0.95, 1.40],
+    # Sole d'inverno (Canarie, Mar Rosso, Golfo, Caraibi): alta stagione
+    # quando in Europa fa freddo, bassa in piena estate — quando lì è
+    # invivibile per il caldo o è stagione delle piogge. È la curva
+    # OPPOSTA a quella mediterranea, ed è il motivo per cui esiste questo
+    # profilo separato: applicare la curva `beach` a Fuerteventura o
+    # Hurghada le faceva risultare più economiche proprio nei mesi in cui
+    # sono al massimo della richiesta.
+    PROFILE_WINTER_SUN: [1.30, 1.25, 1.15, 1.00, 0.90, 0.85, 0.90, 0.95, 0.85, 0.95, 1.10, 1.35],
+    # Lungo raggio tropicale con alta stagione estiva europea (Bali, Thailandia
+    # del sud): picco luglio-agosto e festività di fine anno.
+    PROFILE_TROPICAL: [1.20, 1.10, 0.95, 0.90, 0.90, 1.00, 1.20, 1.30, 0.95, 0.90, 0.95, 1.25],
+    # Città d'arte: molto più stabile, leggero picco primavera/autunno e feste.
+    PROFILE_CITY:  [0.85, 0.85, 1.00, 1.10, 1.10, 1.05, 1.00, 0.90, 1.05, 1.10, 0.90, 1.10],
+}
+
+_WINTER_MONTHS = {11, 12, 1, 2, 3}
+_SUMMER_MONTHS = {6, 7, 8}
+
+# Soglia alta di proposito: "sole d'inverno" deve significare una meta
+# davvero calda in gennaio (Canarie 85, Mar Rosso 95, Golfo 90), non una
+# città mediterranea mite. Con una soglia a 55 ci finivano dentro Roma
+# (warm 55) e Lisbona (warm 68), che sono city break a tutti gli effetti e
+# hanno i best_months spostati sull'inverno solo perché d'estate ci si
+# cuoce — non perché siano destinazioni balneari invernali.
+_WINTER_SUN_MIN_WARMTH = 75
+
+
+def _seasonal_profile(row) -> str:
+    """Assegna il profilo stagionale leggendo i dati già nel dataset.
+
+    Il discriminante chiave è `best_months`: una meta calda la cui stagione
+    migliore cade nell'inverno europeo è una destinazione da "sole d'inverno"
+    (Canarie, Mar Rosso, Golfo, Caraibi) e ha una curva di prezzi opposta a
+    quella di una meta balneare mediterranea, anche quando i due posti si
+    somigliano su tutti gli altri campi.
+
+    L'ordine dei controlli conta: la neve vince su tutto (una meta alpina con
+    un lago non è balneare), poi il sole d'inverno, poi il tropicale a
+    stagione estiva, infine il mare mediterraneo."""
+    if row["snow_score"] >= 50:
+        return PROFILE_SKI
+
+    best = set(row["best_months"])
+    winter_best = len(best & _WINTER_MONTHS)
+    summer_best = len(best & _SUMMER_MONTHS)
+
+    if row["warm_score"] >= _WINTER_SUN_MIN_WARMTH and winter_best >= 3 and winter_best > summer_best:
+        return PROFILE_WINTER_SUN
+    if row["warm_score"] >= 60 and row["flight_hours"] >= 6:
+        return PROFILE_TROPICAL
+    # Il mare mediterraneo richiede anche un relax alto: senza, una città
+    # affacciata sull'acqua (Lisbona, relax 50) prenderebbe la curva di una
+    # meta balneare, con il picco d'agosto che per un city break non esiste.
+    tags = set(row["tags"])
+    if row["warm_score"] >= 55 and row["relax_score"] >= 60 and ({"spiaggia", "mare", "surf"} & tags):
+        return PROFILE_BEACH
+    return PROFILE_CITY
+
+
+def seasonal_cost_factor(profile: str, months: list[int] | None) -> float:
+    """Moltiplicatore di costo per un profilo stagionale nei mesi richiesti.
+
+    `months` è la lista 1-12 dei mesi coperti dal viaggio (vedi
+    recommender.PERIOD_TO_MONTHS). None/lista vuota -> 1.0, cioè il costo
+    medio annuo già presente nel dataset: è ciò che rende l'intera feature
+    retro-compatibile per chi non specifica un periodo."""
+    if not months:
+        return 1.0
+    factors = SEASONAL_COST_FACTORS.get(profile)
+    if not factors:
+        return 1.0
+    valid = [factors[m - 1] for m in months if 1 <= m <= 12]
+    return sum(valid) / len(valid) if valid else 1.0
+
+
 def _validate_and_align_day_fields(df: pd.DataFrame) -> pd.DataFrame:
     """Garantisce le invarianti sui campi giorno che il Trip Builder assume
     quando somma le tappe di un itinerario (vedi trip_builder.score_trip):
@@ -1805,6 +1941,18 @@ def load_destinations_df() -> pd.DataFrame:
     df["minimum_days"] = df["days_min"]
     df["ideal_days"] = ((df["days_min"] + df["days_max"]) / 2).round().astype(int)
     df["cluster"] = df["id"].map(CLUSTER_BY_ID).fillna(df["country"])
+
+    # Ritmo: punteggio continuo (utile allo scoring) + etichetta (utile alla UI).
+    df["pace_score"] = (
+        df["activity_level"] * 20 * PACE_WEIGHTS["activity"]
+        + df["adventure_score"] * PACE_WEIGHTS["adventure"]
+        + (100 - df["relax_score"]) * PACE_WEIGHTS["non_relax"]
+    ).round(1)
+    df["pace"] = df["pace_score"].map(pace_label_for_score)
+
+    # Profilo stagionale: serve a seasonal_cost_factor() per capire come si
+    # muovono i prezzi di QUESTA meta nei mesi scelti dall'utente.
+    df["seasonal_profile"] = df.apply(_seasonal_profile, axis=1)
 
     df = _validate_and_align_day_fields(df)
 

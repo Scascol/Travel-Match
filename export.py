@@ -22,7 +22,7 @@ import re
 from typing import Any
 
 from trip_presentation import export_trip_as_text, format_cost_scenarios_lines
-from utils import budget_warning_for_range, format_price_range
+from utils import budget_warning_for_range, format_price, format_price_range
 
 try:
     from reportlab.lib import colors
@@ -130,6 +130,30 @@ def export_destination_as_text(row: Any, budget_max: float | None = None) -> str
     lines.append("")
     lines.append("— Generato con TravelMatch ✈️")
     return "\n".join(lines)
+
+
+def export_destination_as_stories(row: Any) -> str:
+    """Versione "stories": pochissime righe, molto spazio, pensata per essere
+    incollata su una storia Instagram/WhatsApp Status invece che letta.
+
+    Volutamente diversa da export_destination_as_text (che è un riepilogo da
+    leggere) e dalla didascalia social (social_card.py, che accompagna
+    un'immagine): qui il testo È il contenuto, quindi va tenuto cortissimo
+    e spezzato in blocchi che reggono su schermo verticale."""
+    cost = row.get("seasonal_cost_min", row["total_cost_min"])
+    blocks = [
+        f"✈️ {row['name'].upper()}",
+        f"{row['country']}",
+        "",
+        f"{row['match_score']:.0f}% match",
+        f"da {format_price(cost)}",
+        f"{row['days_min']}-{row['days_max']} giorni",
+    ]
+    wow = list(row.get("wow_experiences", []))
+    if wow:
+        blocks += ["", f"⭐ {wow[0]}"]
+    blocks += ["", "TravelMatch ✈️"]
+    return "\n".join(blocks)
 
 
 def export_trip_as_text_with_budget(trip: dict[str, Any], budget_max: float | None = None) -> str:

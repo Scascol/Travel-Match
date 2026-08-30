@@ -34,6 +34,7 @@ from typing import Any
 
 import pandas as pd
 
+from destinations import pace_label_for_score, seasonal_cost_factor
 from recommender import (
     BUDGET_BUFFER_RATIO,
     MAX_WEIGHT,
@@ -41,6 +42,7 @@ from recommender import (
     _season_match,
     get_default_boosts,
     get_default_weights,
+    requested_months,
     score_destination,
 )
 from trip_routes import TRIP_TEMPLATES, load_routes_df
@@ -410,6 +412,23 @@ def _compute_trip_cost(stops: list, edges: list[dict]) -> tuple[float, float]:
     return breakdown["total_min"], breakdown["total_max"]
 
 
+def seasonal_trip_cost_min(stops: list, total_cost_min: float, prefs: dict[str, Any]) -> float:
+    """Il costo Economico dell'itinerario corretto per la stagione, coerente
+    con recommender.seasonal_cost_min per le destinazioni singole: senza
+    questo, ad agosto un viaggio in Grecia risulterebbe "dentro budget" qui e
+    "fuori budget" nella card della singola tappa.
+
+    Le tappe possono avere profili stagionali diversi (una città + un'isola):
+    usiamo la media dei loro fattori, che è la sintesi onesta per un costo
+    già aggregato — pesare tappa per tappa richiederebbe di scomporre il
+    totale, che include un volo unico e i trasferimenti comuni."""
+    months = requested_months(prefs)
+    if not months or not stops:
+        return total_cost_min
+    factors = [seasonal_cost_factor(s.get("seasonal_profile", "city"), months) for s in stops]
+    return total_cost_min * (sum(factors) / len(factors))
+
+
 def _mood_coverage(stops: list, moods: list[str]) -> float:
     """Quanto bene l'itinerario nel suo insieme copre i mood richiesti:
     per ogni mood prende il MEGLIO tra le tappe (non la media), cosi' un
@@ -515,7 +534,9 @@ def score_trip(
 
     total_cost_min, total_cost_max = _compute_trip_cost(stops, edges)
     _budget_min, budget_max = prefs.get("budget_range", (None, None))
-    budget = _budget_feasibility(total_cost_min, budget_max)
+    seasonal_min = seasonal_trip_cost_min(stops, total_cost_min, prefs)
+    budget = _budget_feasibility(seasonal_min, budget_max)
+    trip_pace_score = sum(s["pace_score"] for s in stops) / len(stops) if stops else 50.0
 
     season = _season_compatibility(stops, prefs.get("period"), prefs.get("custom_months"))
 
@@ -580,6 +601,12 @@ def score_trip(
         "mood_coverage": round(mood_coverage, 1),
         "total_cost_min": total_cost_min,
         "total_cost_max": total_cost_max,
+        "seasonal_cost_min": round(seasonal_min),
+        # Ritmo dell'itinerario: media delle tappe. Un viaggio non è più
+        # intenso della somma delle sue tappe — è la loro andatura media,
+        # più i trasferimenti, già penalizzati altrove (time_feasibility).
+        "pace_score": round(trip_pace_score, 1),
+        "pace": pace_label_for_score(trip_pace_score),
         "transfer_time_hours": transfer_time_hours,
         "transfer_cost": sum(e["transport_cost"] for e in edges),
         "ideal_days": total_ideal_days,
@@ -690,7 +717,7 @@ def _build_trip_record(stops, edges, prefs, weights, boosts, trip_weights, adjus
 
     budget_max = prefs.get("budget_range", (None, None))[1]
     if budget_max:
-        within_budget_buffer = result["total_cost_min"] <= budget_max * (1 + BUDGET_BUFFER_RATIO)
+        within_budget_buffer = result["seasonal_cost_min"] <= budget_max * (1 + BUDGET_BUFFER_RATIO)
     else:
         within_budget_buffer = True
 

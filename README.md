@@ -94,14 +94,15 @@ di componenti, ciascuna già espressa su scala 0-100:
 
 ```python
 DEFAULT_WEIGHTS = {
-    "budget":   0.20,
-    "mood":     0.20,
-    "climate":  0.15,
+    "budget":   0.19,
+    "mood":     0.17,
+    "climate":  0.13,
     "season":   0.10,
     "duration": 0.10,
-    "social":   0.10,
+    "social":   0.09,
     "comfort":  0.05,
-    "distance": 0.10,
+    "distance": 0.09,
+    "pace":     0.08,
 }
 ```
 
@@ -139,6 +140,10 @@ destinazione:
   comfort_level della meta.
 - **distance** — quanto le ore di volo restano sotto (o superano) il limite
   scelto.
+- **pace** — quanto il ritmo della meta (`pace_score`, derivato in
+  `destinations.py` da activity_level + adventure + inverso di relax)
+  si avvicina all'intensità richiesta nel questionario. Prima l'intensità
+  alimentava solo il Travel DNA e non influenzava i risultati.
 
 A queste si affiancano **componenti secondarie a peso zero di default**
 (romantic, adventure, relax, food, luxury, snow, warm — i punteggi grezzi
@@ -395,3 +400,66 @@ scoring. Ogni feature è un modulo leggero che legge dati già calcolati.
 - **Facilità organizzativa (1-5)** (`insights.organizational_ease` / `trip_organizational_ease`)
   - Calcolata (non un nuovo campo nel dataset) da area geografica, ore di volo e `comfort_level`.
   - Per i viaggi combinati: il minimo tra le tappe (la più complessa "detta il ritmo"), con una piccola penalità per ogni tappa oltre la prima.
+
+---
+
+## 12. Upgrade 3 — ritmo, stagionalità, feature narrative
+
+### Ritmo del viaggio (Rilassato / Dinamico / Intenso)
+
+`destinations.py` deriva due colonne nuove senza toccare i record autorati:
+`pace_score` (0-100) e `pace` (etichetta). La formula mescola `activity_level`,
+`adventure_score` e l'inverso di `relax_score`: usare il solo `activity_level`
+avrebbe dato gruppi inutili (42 destinazioni su 79 valgono 2). Distribuzione
+risultante: 32 Rilassato / 35 Dinamico / 12 Intenso.
+
+Il ritmo è una componente di scoring (vedi sezione 3), un badge nelle card e
+una colonna nel confronto. Per gli itinerari è la media delle tappe
+(`trip_builder`, via `pace_label_for_score` — soglie condivise, non duplicate).
+
+### Stagionalità dei costi
+
+I range del dataset restano una **media annua**. `SEASONAL_COST_FACTORS`
+(in `destinations.py`) li corregge per mese secondo il profilo della meta —
+`beach`, `ski`, `tropical`, `city` — assegnato da `_seasonal_profile()` leggendo
+punteggi già presenti. Creta passa da 470 € a 646 € in agosto e 376 € a gennaio;
+Zermatt fa il percorso opposto.
+
+`seasonal_cost_factor(profile, months)` restituisce **1.0 senza mesi**: chi non
+indica un periodo vede esattamente i numeri di prima. Lo usano
+`recommender.seasonal_cost_min` (scoring, hard constraint e buffer budget) e
+`trip_builder.seasonal_trip_cost_min`, così destinazioni e itinerari non possono
+dare risposte diverse sullo stesso mese.
+
+### Feature di lettura (`insights.py`, `checklist.py`, `export.py`)
+
+- **Travel DNA vs meta** (`dna_vs_destination`, `dna_alignment_summary`) — confronto
+  dimensione per dimensione, con stato allineato / offre di più / offre meno.
+- **Giornata tipo** (`typical_day`) — mattina/pomeriggio/sera dedotti dai tag,
+  più un'esperienza WOW. Non è un itinerario: è un assaggio di atmosfera.
+- **Cosa ti porti a casa** (`emotional_takeaways`) — 3 highlight emotivi dai
+  tratti sopra 65, il contraltare della checklist.
+- **Stagionalità visuale** (`seasonality_months`, `seasonality_note`) — striscia
+  dei 12 mesi con i migliori evidenziati e il mese scelto contornato.
+- **Spiegazione narrativa** (`narrative_explanation`) — 2-3 frasi da mood,
+  stagione, margine di budget e DNA. Fallback su `explain_match` se manca materiale.
+- **Alternative accessibili** (`accessible_alternatives`) — per ogni meta fuori
+  budget, 1-2 ripieghi nello stesso cluster/mood con quanto si risparmia.
+- **Avvisi per modalità viaggiatore** (`traveller_mode_warnings`) — solo/coppia/
+  gruppo/famiglia cambiano quali avvisi hanno senso.
+- **Checklist smart** — due sezioni nuove ("Cosa lasciare a casa", "Cose che si
+  dimenticano spesso") che dipendono da comfort, durata, clima e area, più un
+  blocco dedicato al primo viaggio da solo/a.
+- **Export stories** (`export_destination_as_stories`) — testo cortissimo per
+  storie/status, diverso sia dal riepilogo sia dalla didascalia social.
+
+### Interfaccia
+
+Palette "cielo" (#4A90E2 / #E3F2FD / #1E88E5, testo #1A237E) applicata a
+`.streamlit/config.toml` e al CSS globale. Home con hero centrato, questionario
+in 8 card numerate, risultati con dettagli collassati. Nuove pagine:
+**I miei viaggi** (preferiti, radar di confronto, tabella costi) e
+**Sorpresa controllata** (2-3 vincoli duri, poi pesca una meta meno ovvia).
+
+Il radar dei Travel Style è **SVG inline**: nessuna libreria di grafici in più,
+e si tinge con la palette dell'app.

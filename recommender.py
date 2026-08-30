@@ -17,6 +17,10 @@ from typing import Any
 
 import pandas as pd
 
+# `seasonal_cost_factor` vive in destinations.py insieme alla tabella dei
+# fattori: è un dato (come i costi), non logica di scoring. Qui la importiamo
+# invece di duplicare la tabella, che è la sola alternativa e la peggiore.
+from destinations import seasonal_cost_factor
 from utils import (
     AREA_TO_REGIONS,
     COMFORT_TO_LEVEL,
@@ -31,14 +35,18 @@ from utils import (
 # (indicativamente) a 1.0: la normalizzazione finale rende comunque lo score
 # sempre confrontabile anche se i pesi vengono alterati dal raffinamento.
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "budget": 0.20,
-    "mood": 0.20,
-    "climate": 0.15,
+    "budget": 0.19,
+    "mood": 0.17,
+    "climate": 0.13,
     "season": 0.10,
     "duration": 0.10,
-    "social": 0.10,
+    "social": 0.09,
     "comfort": 0.05,
-    "distance": 0.10,
+    "distance": 0.09,
+    # Ritmo: usa l'`intensity` già chiesta nel questionario ("Ritmo del
+    # viaggio"), che prima alimentava solo il Travel DNA e non influenzava
+    # i risultati. Peso contenuto: orienta senza ribaltare il match.
+    "pace": 0.08,
 }
 
 # Pesi delle componenti "secondarie" (bonus mirati), attivate/aumentate dai
@@ -114,6 +122,17 @@ PERIOD_TO_MONTHS = {
 CHRISTMAS_LIKE_PERIODS = {"🎄 Natale", "🎆 Capodanno", "🎄🎆 Natale + Capodanno"}
 
 
+def requested_months(prefs: dict[str, Any]) -> list[int] | None:
+    """I mesi coperti dal periodo scelto (1-12), o None se l'utente non ha
+    espresso un periodo con mesi definiti (es. "Weekend"). Unico punto in cui
+    si traduce periodo -> mesi: prima la stessa logica viveva duplicata in
+    _season_match e _meets_strict_criteria, con il rischio che divergessero."""
+    period = prefs.get("period")
+    if period == "📅 Date personalizzate":
+        return prefs.get("custom_months")
+    return PERIOD_TO_MONTHS.get(period)
+
+
 def get_default_weights() -> dict[str, float]:
     return dict(DEFAULT_WEIGHTS)
 
@@ -158,20 +177,49 @@ def filter_by_area(df: pd.DataFrame, area_key: str) -> pd.DataFrame:
 # Componenti dello score (ognuna 0-100)
 # ---------------------------------------------------------------------------
 
-def _budget_match(row, budget_min: float, budget_max: float) -> float:
+def seasonal_cost_min(row, prefs: dict[str, Any]) -> float:
+    """Costo Economico ("da X €") corretto per la stagionalità del periodo
+    scelto: d'agosto Creta costa il 40% in più che a novembre, e ignorarlo
+    significherebbe mostrare come "dentro budget" viaggi che dentro budget
+    non ci stanno in quel mese.
+
+    Nessun periodo scelto -> fattore 1.0, cioè esattamente il valore medio
+    annuo del dataset: chi non specifica quando parte vede i numeri di
+    prima (vedi destinations.seasonal_cost_factor)."""
+    months = requested_months(prefs)
+    factor = seasonal_cost_factor(row.get("seasonal_profile", "city"), months)
+    return row["total_cost_min"] * factor
+
+
+def _budget_match(row, prefs: dict[str, Any], budget_max: float) -> float:
     """Confronta il budget scelto con lo scenario Economico della destinazione
-    (total_cost_min, cioè "da X €"): Medio ed Elevato restano solo scenari
-    informativi (vedi utils.cost_scenarios), non entrano mai nello score né
-    nell'hard constraint — così un budget basso non esclude ingiustamente una
-    meta che è comunque raggiungibile scegliendo la fascia più economica."""
+    (total_cost_min corretto per stagione, cioè "da X €"): Medio ed Elevato
+    restano solo scenari informativi (vedi utils.cost_scenarios), non entrano
+    mai nello score né nell'hard constraint — così un budget basso non
+    esclude ingiustamente una meta che è comunque raggiungibile scegliendo
+    la fascia più economica."""
     if budget_max is None or budget_max <= 0:
         return 70.0
-    cost_econ = row["total_cost_min"]
+    cost_econ = seasonal_cost_min(row, prefs)
     if cost_econ <= budget_max:
         ratio = cost_econ / max(budget_max, 1)
         return max(70.0, 100.0 - ratio * 15.0)
     overage = (cost_econ - budget_max) / budget_max
     return max(0.0, 100.0 - overage * 140.0)
+
+
+# Punteggio-ritmo "bersaglio" per ciascuna intensità scelta dall'utente,
+# sulla stessa scala di destinations.pace_score.
+PACE_TO_TARGET = {"relaxed": 25.0, "dynamic": 48.0, "intense": 75.0}
+
+
+def _pace_match(row, intensity: str | None) -> float:
+    """Quanto il ritmo della meta si avvicina a quello richiesto. Nessuna
+    intensità scelta -> valore neutro, così la componente non sposta nulla."""
+    target = PACE_TO_TARGET.get(intensity or "")
+    if target is None:
+        return 70.0
+    return max(0.0, 100.0 - abs(row["pace_score"] - target) * 1.6)
 
 
 def _mood_match(row, moods: list[str], tags: list[str]) -> float:
@@ -201,10 +249,7 @@ def _climate_match(row, climates: list[str]) -> float:
 
 
 def _season_match(row, period: str | None, custom_months: list[int] | None) -> float:
-    if period == "📅 Date personalizzate":
-        req_months = custom_months
-    else:
-        req_months = PERIOD_TO_MONTHS.get(period)
+    req_months = requested_months({"period": period, "custom_months": custom_months})
 
     if not req_months:
         base = 85.0
@@ -274,6 +319,7 @@ COMPONENT_LABELS = {
     "social": "la socialità che cerchi",
     "comfort": "il livello di comfort",
     "distance": "la distanza di volo preferita",
+    "pace": "il ritmo di viaggio che cerchi",
     "romantic": "l'atmosfera romantica",
     "adventure": "la voglia di avventura",
     "relax": "la voglia di relax",
@@ -285,10 +331,11 @@ COMPONENT_LABELS = {
 
 
 def _compute_components(row, prefs: dict[str, Any]) -> dict[str, float]:
-    budget_min, budget_max = prefs.get("budget_range", (None, None))
+    _budget_min, budget_max = prefs.get("budget_range", (None, None))
     days_min, days_max = prefs.get("duration_range", (None, None))
     return {
-        "budget": _budget_match(row, budget_min, budget_max),
+        "budget": _budget_match(row, prefs, budget_max),
+        "pace": _pace_match(row, prefs.get("intensity")),
         "mood": _mood_match(row, prefs.get("moods", []), prefs.get("tags", [])),
         "climate": _climate_match(row, prefs.get("climate", [])),
         "season": _season_match(row, prefs.get("period"), prefs.get("custom_months")),
@@ -341,7 +388,7 @@ def explain_match(row, components: dict[str, float], weights: dict[str, float], 
 # Motore principale
 # ---------------------------------------------------------------------------
 
-def _within_budget_buffer(row, budget_max: float | None) -> bool:
+def _within_budget_buffer(row, prefs: dict[str, Any], budget_max: float | None) -> bool:
     """True se la destinazione sta dentro il budget scelto, o al massimo
     BUDGET_BUFFER_RATIO oltre — la soglia che decide se una destinazione
     resta nei risultati principali (eventualmente segnalata come piccolo
@@ -352,13 +399,13 @@ def _within_budget_buffer(row, budget_max: float | None) -> bool:
     escluderebbe mete raggiungibili scegliendo la fascia più economica."""
     if not budget_max or budget_max <= 0:
         return True
-    return row["total_cost_min"] <= budget_max * (1 + BUDGET_BUFFER_RATIO)
+    return seasonal_cost_min(row, prefs) <= budget_max * (1 + BUDGET_BUFFER_RATIO)
 
 
 def _meets_strict_criteria(row, prefs: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons = []
-    budget_min, budget_max = prefs.get("budget_range", (None, None))
-    if budget_max and row["total_cost_min"] > budget_max:
+    _budget_min, budget_max = prefs.get("budget_range", (None, None))
+    if budget_max and seasonal_cost_min(row, prefs) > budget_max:
         reasons.append("budget")
 
     max_flight_hours = prefs.get("max_flight_hours")
@@ -370,8 +417,7 @@ def _meets_strict_criteria(row, prefs: dict[str, Any]) -> tuple[bool, list[str]]
         if row["days_max"] < days_min or row["days_min"] > days_max:
             reasons.append("durata")
 
-    period = prefs.get("period")
-    req_months = prefs.get("custom_months") if period == "📅 Date personalizzate" else PERIOD_TO_MONTHS.get(period)
+    req_months = requested_months(prefs)
     if req_months and not (set(req_months) & set(row["best_months"])):
         reasons.append("periodo")
 
@@ -396,7 +442,8 @@ def score_all(df: pd.DataFrame, prefs: dict[str, Any], weights: dict[str, float]
             "meets_strict": meets_strict,
             "compromise_reasons": fail_reasons,
             "explanation": explanation,
-            "within_budget_buffer": _within_budget_buffer(row, budget_max),
+            "seasonal_cost_min": round(seasonal_cost_min(row, prefs)),
+            "within_budget_buffer": _within_budget_buffer(row, prefs, budget_max),
         })
 
     scored = pd.DataFrame(records)
