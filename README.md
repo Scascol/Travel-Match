@@ -2,24 +2,40 @@
 
 **Dove dovresti andare davvero in vacanza?**
 
-TravelMatch è una piccola app da viaggio "vera" — ispirata a WeRoad, G Adventures e
-Intrepid Travel — che ti aiuta a scegliere la meta giusta per la tua prossima
-vacanza, **in qualunque periodo dell'anno**: weekend, primavera, estate, autunno,
-inverno o le feste di Natale/Capodanno sono tutti trattati allo stesso modo dal
-motore, che dà un piccolo boost coerente solo quando scegli esplicitamente un
-periodo festivo (vedi sezione 3). Funziona interamente offline, con un dataset
-locale di 79 destinazioni reali e un motore di raccomandazione scritto da zero
-(nessuna chiamata a servizi esterni, nessuna AI generativa: solo un buon algoritmo
-di scoring).
+App di travel matching che aiuta a scegliere la meta giusta rispondendo a un
+questionario — offline, senza AI generativa, senza chiamate di rete. Il
+dataset (79 destinazioni reali) e il motore di scoring sono scritti a mano;
+Streamlit fa solo da interfaccia.
 
-Oltre a suggerire **singole destinazioni**, TravelMatch è anche un **Trip
-Builder**: propone itinerari realistici di 2-3 tappe (es. "Istanbul & Cappadocia",
-"Tokyo, Kyoto & Osaka") solo quando sono davvero fattibili — mai solo perché il
-punteggio è alto. Vedi la sezione 7 per i dettagli.
+Funziona per **qualunque periodo dell'anno**: weekend, stagioni, o le feste
+di Natale/Capodanno. Il periodo scelto dà solo un piccolo boost coerente
+quando è esplicitamente festivo (vedi §3) — mai un bias di default.
+
+Oltre alle **singole destinazioni**, TravelMatch è anche un **Trip Builder**:
+propone itinerari di 2-3 tappe (es. "Istanbul & Cappadocia") solo quando sono
+davvero fattibili, mai solo perché il punteggio è alto (§6).
 
 ---
 
-## 1. Installazione e avvio
+## Indice
+
+1. [Installazione e struttura](#1-installazione-e-struttura)
+2. [Architettura](#2-architettura)
+3. [Il Travel Match Score](#3-il-travel-match-score)
+4. [Travel DNA](#4-travel-dna)
+5. [Costi: scenari, dati statici, stagionalità](#5-costi-scenari-dati-statici-stagionalità)
+6. [Trip Builder — viaggi combinati](#6-trip-builder--viaggi-combinati)
+7. [Dettagli di ogni meta](#7-dettagli-di-ogni-meta)
+8. [Modalità di ricerca](#8-modalità-di-ricerca)
+9. [Confronto e "I miei viaggi"](#9-confronto-e-i-miei-viaggi)
+10. [Export e condivisione](#10-export-e-condivisione)
+11. [Interfaccia](#11-interfaccia)
+12. [Estendere il dataset](#12-estendere-il-dataset)
+13. [Note di robustezza](#13-note-di-robustezza)
+
+---
+
+## 1. Installazione e struttura
 
 Requisiti: Python 3.10+.
 
@@ -28,438 +44,354 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-L'app si apre automaticamente nel browser su `http://localhost:8501`. Non serve
-nessuna connessione internet dopo l'installazione delle dipendenze: il dataset è
-locale (`destinations.py`) e non ci sono chiamate di rete.
-
-### Struttura del progetto
+Si apre su `http://localhost:8501`. Nessuna connessione internet richiesta
+dopo l'installazione: il dataset è locale (`destinations.py`).
 
 ```text
 travelmatch/
-├── app.py                  # interfaccia Streamlit (UI, stato, pagine)
-├── recommender.py          # motore di raccomandazione per singola destinazione
+├── app.py                  # interfaccia Streamlit (UI, stato, pagine) — nessuna logica di scoring
+├── recommender.py          # motore di scoring per singola destinazione (zero dipendenze da Streamlit)
 ├── trip_builder.py         # motore Trip Builder (itinerari multi-tappa) + confronto viaggi
+├── trip_routes.py          # rotte tra destinazioni + trip template curati a mano
 ├── trip_presentation.py    # spiegazioni, timeline ed export testuale dei viaggi combinati
-├── destinations.py         # dataset locale (79 destinazioni)
-├── trip_routes.py          # rotte tra destinazioni + trip template validati
-├── utils.py                # costanti del questionario, Travel DNA, formattazione, salvataggio
-├── insights.py             # Travel Style, avvisi contestuali, facilità organizzativa, anti-FOMO
-├── checklist.py            # checklist pratica automatica (cosa portare, documenti, consigli)
-├── export.py               # export testo/PDF di destinazioni e viaggi combinati
-├── social_card.py          # immagine e didascalia "social" condivisibili
+├── destinations.py         # dataset locale (79 destinazioni) + ritmo/stagionalità derivati
+├── insights.py             # Travel Style, DNA vs meta, giorno tipo, avvisi, anti-FOMO, facilità organizzativa
+├── checklist.py            # checklist di viaggio (cosa portare/lasciare a casa, documenti, consigli)
+├── utils.py                # costanti del questionario, Travel DNA, formattazione, scenari di costo
+├── export.py                # export testo/PDF/"stories" di destinazioni e viaggi combinati
+├── social_card.py          # immagine + didascalia "social" condivisibile
 ├── requirements.txt
-└── README.md
+└── .streamlit/config.toml  # tema colori nativo Streamlit
 ```
 
 ---
 
 ## 2. Architettura
 
-Il progetto è diviso in quattro livelli indipendenti, così com'era richiesto:
+Quattro livelli indipendenti:
 
-- **`destinations.py` — dati.** Ogni destinazione è un dizionario con uno schema
-  fisso (~35 campi: punteggi 0-100 per mood/clima/atmosfera natalizia, costi a
-  range, durata di volo, mesi consigliati, esperienze WOW, pro/contro, consigli
-  pratici...). Aggiungere una destinazione nuova (o arrivare a 100+) significa
-  solo aggiungere un dizionario in più: **nessuna modifica al motore è
-  necessaria**, perché il recommender lavora sulle colonne del DataFrame, non su
-  singole destinazioni hardcoded.
+- **`destinations.py` — dati.** Ogni destinazione è un dizionario a schema
+  fisso (~35 campi autorati + colonne derivate come `pace_score` e
+  `seasonal_profile`, calcolate da `load_destinations_df()`). Aggiungere una
+  meta non richiede toccare il motore.
+- **`recommender.py` / `trip_builder.py` — motore.** Puro Python + pandas,
+  **zero dipendenze da Streamlit**: testabile in isolamento, riusabile in
+  un'API o un altro frontend.
+- **`utils.py`, `insights.py`, `checklist.py`, `export.py`, `social_card.py`
+  — presentazione.** Leggono dati già calcolati dal motore e li trasformano
+  in testo/immagini per l'utente. Non alterano mai uno score.
+- **`app.py` — interfaccia.** Orchestrazione delle pagine via
+  `st.session_state`, rendering delle card, CSS. Chiama gli altri moduli,
+  non contiene logica propria di scoring.
 
-- **`recommender.py` — motore.** Puro Python + pandas, **zero dipendenze da
-  Streamlit**. Espone funzioni testabili in isolamento: `get_recommendations`,
-  `surprise_me`, `get_christmas_categories`, `compare_destinations`,
-  `apply_refinement`. Può essere riusato in futuro in un'API, in un notebook o
-  in un altro frontend senza modifiche.
-
-- **`utils.py` — utility.** Costanti del questionario (fasce di budget, mood,
-  tag...), calcolo del Travel DNA, formattazione di prezzi/temperature/emoji,
-  salvataggio/caricamento locale in JSON. Anche questo modulo non dipende da
-  Streamlit.
-
-- **`app.py` — interfaccia.** Orchestrazione delle pagine (landing →
-  questionario → risultati) tramite `st.session_state`, rendering delle card,
-  gestione dei pulsanti di raffinamento e confronto. Non contiene logica di
-  scoring: si limita a chiamare `recommender.py` e mostrare il risultato.
-
-Questa separazione è quella richiesta esplicitamente dal progetto: puoi far
-crescere il dataset a 100+ destinazioni, o sostituire Streamlit con un'altra UI,
-senza toccare il motore.
+Regola pratica: se una modifica cambia *quanto* una meta matcha, va in
+`recommender.py`/`trip_builder.py`. Se cambia solo *come viene raccontata*,
+va in uno dei moduli di presentazione.
 
 ---
 
-## 3. Il Travel Match Score — come funziona
+## 3. Il Travel Match Score
 
-Ogni destinazione riceve un punteggio da 0 a 100 calcolato come **media pesata**
-di componenti, ciascuna già espressa su scala 0-100:
+Ogni destinazione riceve uno score 0-100, media pesata di componenti già
+0-100 ciascuna. Pesi centralizzati in `recommender.DEFAULT_WEIGHTS`:
 
 ```python
 DEFAULT_WEIGHTS = {
-    "budget":   0.19,
-    "mood":     0.17,
-    "climate":  0.13,
-    "season":   0.10,
-    "duration": 0.10,
-    "social":   0.09,
-    "comfort":  0.05,
-    "distance": 0.09,
-    "pace":     0.08,
+    "budget": 0.19, "mood": 0.17, "climate": 0.13, "season": 0.10,
+    "duration": 0.10, "social": 0.09, "comfort": 0.05, "distance": 0.09,
+    "pace": 0.08,
 }
 ```
 
-I pesi sono **centralizzati** in `recommender.py` (`DEFAULT_WEIGHTS` /
-`DEFAULT_BOOSTS`) e possono essere modificati in un unico punto per cambiare il
-comportamento di tutta l'app.
+| Componente | Cosa confronta |
+|---|---|
+| **budget** | Il budget indicato vs lo scenario **Economico** della meta (`total_cost_min`, "da X €" corretto per stagione — §5). Mai la media o lo scenario Elevato: un budget contenuto non deve escludere mete raggiungibili scegliendo l'alloggio giusto. |
+| **mood** | Affinità con i mood scelti + overlap dei tag speciali. |
+| **climate** | Clima tipico della meta vs quello richiesto. |
+| **season** | Sovrapposizione con `best_months`. Solo per Natale/Capodanno si somma un bonus festivo (mercatini/neve o fuga al caldo) — mai per gli altri periodi. |
+| **duration** | Sovrapposizione tra giorni desiderati e durata consigliata. |
+| **social** | Distanza tra lo slider di socialità e il livello sociale tipico della meta. |
+| **comfort** | Distanza tra il comfort desiderato e il `comfort_level` della meta. |
+| **distance** | Ore di volo vs limite scelto. |
+| **pace** | Il ritmo della meta (`pace_score`, formula in §6) vs l'intensità richiesta nel questionario. |
 
-Ogni componente confronta le preferenze dell'utente con i dati della
-destinazione:
+Componenti secondarie a peso zero (romantic, adventure, relax, food, luxury,
+snow, warm) si attivano solo con i pulsanti di raffinamento rapido
+(`apply_refinement()`), senza ripetere il questionario. Lo score resta
+sempre normalizzato 0-100 sulla somma dei pesi effettivamente attivi.
 
-- **budget** — confronta il budget indicato con lo scenario **Economico**
-  della destinazione (`total_cost_min`, cioè hostel/1-2 stelle: il "da X €"
-  mostrato nelle card), **mai** con la media o con lo scenario Comodo. Restare
-  comodamente sotto budget dà un punteggio alto; sforare oltre ~15% lo fa
-  crollare rapidamente (vedi hard constraint sotto). Scegliere sempre il
-  minimo del range evita che un budget contenuto escluda ingiustamente mete
-  che restano raggiungibili scegliendo l'alloggio più economico — gli scenari
-  Medio ed Elevato (vedi sezione 9) restano solo informativi, non entrano mai
-  nello score né nell'hard constraint.
-- **mood** — media tra affinità mood (natura, città, romantico...) e overlap
-  dei tag speciali selezionati (mercatini di Natale, trekking, aurora
-  boreale...).
-- **climate** — quanto il clima tipico della destinazione (caldo/temperato/
-  freddo/neve) corrisponde a quello richiesto.
-- **season** — la destinazione è "nella sua stagione migliore" nel periodo
-  richiesto? Per Natale/Capodanno si somma anche un bonus per atmosfera
-  natalizia (mercatini, neve) **oppure** per essere una buona fuga al caldo:
-  è così che il motore rappresenta le due anime "☀️ Fuga al caldo" e
-  "🎄 Winter Wonderland" senza penalizzare l'una a favore dell'altra.
-- **duration** — sovrapposizione tra i giorni desiderati e la durata
-  consigliata per quella meta.
-- **social** — distanza tra lo slider di socialità (0-100) e il livello
-  sociale tipico della destinazione.
-- **comfort** — distanza tra il comfort desiderato (backpacker → luxury) e il
-  comfort_level della meta.
-- **distance** — quanto le ore di volo restano sotto (o superano) il limite
-  scelto.
-- **pace** — quanto il ritmo della meta (`pace_score`, derivato in
-  `destinations.py` da activity_level + adventure + inverso di relax)
-  si avvicina all'intensità richiesta nel questionario. Prima l'intensità
-  alimentava solo il Travel DNA e non influenzava i risultati.
+**Hard constraint**: oltre allo score continuo, `_meets_strict_criteria`
+verifica budget (≤ scenario Economico + 15%), volo, durata e periodo. Se
+meno di 5 mete rispettano tutti i criteri, l'app lo dichiara e completa con
+le migliori alternative, segnalando in ogni card quale criterio è stato
+ammorbidito ("Piccolo compromesso su: budget").
 
-A queste si affiancano **componenti secondarie a peso zero di default**
-(romantic, adventure, relax, food, luxury, snow, warm — i punteggi grezzi
-della destinazione), che si attivano quando l'utente preme un pulsante di
-raffinamento rapido (vedi sotto). Il punteggio finale è sempre normalizzato
-sulla somma dei pesi effettivamente attivi, quindi resta comparabile 0-100
-anche dopo molti raffinamenti.
+**Spiegazione del match**: `explain_match()` individua le componenti che si
+discostano di più (in positivo) da un valore neutro — non semplicemente le
+più alte, per non "spiegare" ogni risultato con ciò che è sempre alto per
+costruzione. In UI questa frase è il fallback di `narrative_explanation()`
+(§7), usata quando non c'è abbastanza materiale per una spiegazione più ricca.
 
-### Spiegazione del match
-
-Per ogni destinazione, `explain_match()` individua le componenti che si
-discostano di più (in positivo) da un valore neutro di riferimento — non
-semplicemente quelle con il valore più alto, per evitare di "spiegare" ogni
-risultato con componenti che sono sempre alte per costruzione (es. "nessun
-limite di volo"). Il risultato è la frase "Perché fa per te" mostrata in ogni
-card.
-
-### Hard constraint e compromessi
-
-Oltre allo score continuo, il motore verifica dei **criteri stretti**
-(`_meets_strict_criteria`): budget non sforato oltre il 15%, volo entro il
-limite, durata compatibile, mese richiesto tra i `best_months` della meta. Se
-meno di 5 destinazioni rispettano tutti i criteri, l'app lo dichiara
-esplicitamente e completa i risultati con le migliori alternative disponibili,
-spiegando in ogni card **quale** criterio è stato ammorbidito ("Piccolo
-compromesso su: budget").
-
-### Raffinamento rapido
-
-I pulsanti "💰 Più economico", "☀️ Più caldo", ecc. **non ripetono il
-questionario**: chiamano `apply_refinement()`, che aumenta un peso esistente
-(es. "Più social" → `weights["social"] += 0.12`) e/o attiva un bonus
-secondario (es. "Più romantico" → `boosts["romantic"] += 0.16`, che inietta
-direttamente il `romantic_score` della destinazione nel calcolo). I pesi
-restano clampati per evitare che troppi click consecutivi sbilancino lo score
-fuori scala.
-
-### 🎲 Sorprendimi
-
-`surprise_me()` filtra le destinazioni con match ≥ 65% (soglia che si abbassa
-gradualmente se il pool è vuoto), esclude quelle già mostrate in top 5, e
-sceglie **con un bias verso posizioni meno scontate** del ranking (non il
-podio assoluto), così la meta proposta è sempre coerente ma raramente banale.
+**🎲 Sorprendimi**: `surprise_me()` filtra le mete con match ≥ 65% (soglia
+che scende se il pool è vuoto), esclude quelle già mostrate, e sceglie con
+un bias verso posizioni meno scontate del ranking — coerente ma raramente
+banale. **Sorpresa controllata** (§8) è la variante con vincoli duri
+espliciti invece delle preferenze complete.
 
 ---
 
 ## 4. Travel DNA
 
-Il Travel DNA (`utils.compute_travel_dna`) è calcolato **solo dalle
-preferenze**, non dal dataset: combina mood selezionati, intensità, slider di
-socialità, comfort e clima in 10 tratti (Adventure, Nature, Food, Social,
-Relax, Luxury, Culture, Romance, Snow, Warmth) su scala 0-100, con una
-descrizione generata automaticamente a partire dai tratti più (e meno) marcati.
-Si aggiorna automaticamente ogni volta che le preferenze cambiano.
+`utils.compute_travel_dna` calcola **solo dalle preferenze** (non dal
+dataset) 10 tratti 0-100 — Adventure, Nature, Food, Social, Relax, Luxury,
+Culture, Romance, Snow, Warmth — con una descrizione automatica. Sempre
+visibile in sidebar, si aggiorna a ogni cambio di preferenze.
+
+**DNA vs meta** (`insights.dna_vs_destination`): confronto tratto per
+tratto tra il profilo utente e quello della destinazione, con tre stati —
+*in linea* (scarto ≤ 18 punti), *offre di più*, *offre meno di quanto
+cerchi*. In UI due barre sovrapposte per tratto, mostrate solo se almeno un
+valore supera 25 (altrimenti righe quasi vuote senza informazione).
 
 ---
 
-## 5. Note di robustezza
+## 5. Costi: scenari, dati statici, stagionalità
 
-- Budget, durata, clima o tag mancanti non causano errori: ogni componente ha
-  un valore neutro di fallback.
-- Se zero destinazioni rispettano tutti i criteri, l'app mostra comunque le
-  migliori alternative disponibili con la spiegazione del compromesso.
-- Le "Date personalizzate" vengono convertite in mesi coperti dal viaggio e
-  usate per il match di stagionalità come le altre opzioni di periodo.
-- Il salvataggio è opzionale e non richiede alcun database: usa
-  `st.session_state` durante la sessione, più un file `.json` scaricabile
-  ("💾 Scarica questa ricerca" nella sidebar) e ricaricabile in seguito
-  ("📂 Carica una ricerca salvata" nella home) per la persistenza tra sessioni.
-  Il file resta sul dispositivo del visitatore, mai sul server: importante
-  per una versione online condivisa da più persone, dove un salvataggio unico
-  lato server finirebbe sovrascritto (e visibile) a ogni utente.
-- Il Trip Builder non genera mai eccezioni se non esistono itinerari fattibili
-  per la durata/preferenze scelte: la sezione "✈️ Viaggi combinati" mostra
-  semplicemente un messaggio che spiega perché una destinazione singola è la
-  scelta migliore in quel caso, invece di forzare una combinazione scadente.
+Nel questionario il budget è **esplicitamente per persona o totale per il
+gruppo** (`app.PEOPLE_HEADCOUNT`): se scelto "totale", viene diviso per il
+numero di persone prima di entrare nello scoring — internamente il motore
+lavora sempre e solo con un budget per persona.
+
+**Tre scenari** (`utils.cost_scenarios`), letti dallo stesso range
+min/max già nel dataset:
+
+| Scenario | Cosa rappresenta | Nello score? |
+|---|---|---|
+| 🟢 Economico | hostel/1-2★, il minimo del range — il "da X €" mostrato ovunque | **Sì**, unico scenario usato da scoring e hard constraint (§3) |
+| 🟡 Medio | 3★/B&B, punto medio | No — solo informativo, avviso soft se sfora il budget oltre il 15% |
+| 🔴 Elevato | 4-5★, massimo maggiorato del 15% | No — solo informativo |
+
+**Dati statici realistici**: i range (volo da Italia + hotel + cibo +
+attività, per la durata consigliata) sono stime calibrate su medie di
+mercato 2023-2025, non aggiornate dinamicamente (nessuna API).
+
+**Stagionalità** (`destinations.py`): i range restano una media annua; un
+fattore per mese la corregge secondo il profilo della meta —
+
+| Profilo | Curva | Esempio |
+|---|---|---|
+| `beach` | picco lug-ago, minimo inverno | Mediterraneo (Creta, Santorini) |
+| `winter_sun` | opposta a `beach`: picco dic-feb, minimo giu-set | Canarie, Mar Rosso, Golfo, Caraibi |
+| `tropical` | picco lug-ago + festività | Bali, Thailandia |
+| `ski` | picco festività + alta stagione neve, minimo estate | Zermatt, Dolomiti |
+| `city` | quasi stabile, lieve picco primavera/autunno/feste | città d'arte |
+
+`_seasonal_profile()` assegna il profilo dai punteggi già nel dataset (neve
+prima di tutto, poi `warm_score`/`relax_score`/`best_months` per distinguere
+sole-d'inverno da mare mediterraneo da città calda). `seasonal_cost_factor()`
+restituisce **1.0 senza un periodo scelto** — retro-compatibilità piena, chi
+non indica quando parte vede i valori medi di sempre. Usata da
+`recommender.seasonal_cost_min` e `trip_builder.seasonal_trip_cost_min`, così
+destinazioni e itinerari non possono contraddirsi sullo stesso mese.
 
 ---
 
-## 7. Trip Builder — viaggi combinati
+## 6. Trip Builder — viaggi combinati
 
 **Principio guida: più destinazioni non significa viaggio migliore.**
-`trip_builder.py` genera itinerari di 2-3 tappe, ma solo quando sono
-**davvero fattibili** — geograficamente sensati, compatibili con la durata
-scelta, con trasferimenti che non "mangiano" il viaggio. Riusa lo scoring per
-singola destinazione di `recommender.py` (non lo duplica) per valutare ogni
-tappa, e aggiunge sopra tre livelli di analisi specifici per gli itinerari.
+`trip_builder.py` genera itinerari di 2-3 tappe solo quando sono
+geograficamente sensati, compatibili con la durata, con trasferimenti che
+non "mangiano" il viaggio. Riusa lo scoring per singola destinazione
+(`recommender.py`), non lo duplica.
 
-### Come nascono le combinazioni
+**Come nascono le combinazioni**: `trip_routes.py` contiene solo i
+collegamenti realmente utili (non una rotta per ogni coppia possibile) —
+è anche il meccanismo che evita combinazioni assurde (es. Reykjavik + Bali:
+senza una rotta autorata, non viene generata). 7 trip template curati
+arricchiscono con nome/descrizione le combinazioni che coincidono, ma il
+motore ne genera liberamente altre dalle rotte disponibili.
 
-`trip_routes.py` contiene un dataset "leggero" di rotte tra destinazioni
-(`origin_id, destination_id, transport_mode, travel_time, transport_cost,
-convenience_score`) — **non una rotta per ogni coppia possibile**, solo i
-collegamenti realmente utili. Questo è anche il meccanismo con cui il motore
-evita combinazioni geograficamente assurde: se non esiste una rotta tra due
-destinazioni (es. Reykjavik + Bali), quella combinazione non può essere
-generata, indipendentemente da quanto siano simili i punteggi. Ogni
-destinazione ha anche un `cluster` (in `destinations.py`, `CLUSTER_BY_ID`) che
-raggruppa mete vicine (es. "Veneto-Dolomiti", "Giappone", "Grecia") — usato
-come ulteriore segnale di coerenza geografica, non come unico criterio.
+**Tre punteggi calcolati separatamente**:
 
-7 **trip template** validati a mano (Istanbul+Cappadocia, Lisbona+Porto,
-Tokyo+Kyoto+Osaka, Bangkok+Chiang Mai, Marrakech+Sahara+Essaouira,
-Vienna+Budapest, Barcellona+Costa Brava) arricchiscono con nome e descrizione
-curati le combinazioni generate quando coincidono, ma **non sono le uniche
-possibili**: il motore genera liberamente altre coppie/triple sensate dalle
-rotte disponibili (es. Firenze+Cinque Terre, Atene+Santorini+Creta).
+1. **Trip Match Score** — `avg_stop×0.40 + min_stop×0.20 + mood_coverage×0.25
+   + efficiency×0.15`. `mood_coverage` prende il **meglio** tra le tappe per
+   ogni mood (non la media): un itinerario complementare (una tappa forte su
+   cultura, l'altra su avventura) viene premiato, non penalizzato.
+2. **Feasibility Score** (interno, mai mostrato in UI) — geographic_coherence
+   25% + transport_feasibility 25% + time_feasibility 25% +
+   budget_feasibility 15% + season_compatibility 10%. Solo itinerari ≥ 75
+   competono (soglia 60 come compromesso, con avviso).
+3. **Travel Efficiency Score** — giorni di esplorazione / (esplorazione +
+   giorni-equivalenti di trasferimento) × 100.
 
-### I tre punteggi
-
-Per ogni itinerario vengono calcolati **separatamente**:
-
-1. **Trip Match Score** — non è una media delle singole destinazioni: è
-   `avg_stop*0.40 + min_stop*0.20 + mood_coverage*0.25 + efficiency*0.15`. Il
-   pezzo chiave è `mood_coverage`: per ogni mood richiesto prende il **meglio**
-   tra le tappe (non la media), così un itinerario complementare (una tappa
-   forte su cultura/food, l'altra su avventura) viene premiato invece di
-   essere penalizzato perché nessuna singola tappa eccelle su tutto.
-2. **Feasibility Score** (pesi centralizzati in `FEASIBILITY_WEIGHTS`):
-   `geographic_coherence 25% + transport_feasibility 25% + time_feasibility
-   25% + budget_feasibility 15% + season_compatibility 10%`, con penalità
-   aggiuntive se i trasferimenti superano il 30-35% del tempo ideale di
-   viaggio o se il numero di tappe eccede le linee guida per la durata scelta.
-   Solo itinerari con Feasibility ≥ 75 vengono usati per selezionare i
-   risultati (soglia che scende a 60 come compromesso se non ce ne sono
-   abbastanza, con avviso esplicito) — **resta un dettaglio puramente
-   interno del motore**: il punteggio numerico non compare mai nell'interfaccia
-   (card, confronti, export, PDF), solo l'effetto delle sue scelte.
-3. **Travel Efficiency Score** — `giorni di esplorazione / (giorni di
-   esplorazione + giorni-equivalenti di trasferimento) × 100`.
-
-Il costo totale stimato assume **un solo volo internazionale** andata/ritorno
-verso la tappa d'ingresso più i trasferimenti locali (andata e ritorno)
-verso le tappe successive — non un volo separato per ogni tappa, che
-gonfierebbe artificialmente il costo di itinerari con una tappa finale meno
-connessa (es. Cappadocia).
-
-### Linee guida su durata → numero di tappe
-
-Non sono regole assolute ma influenzano il punteggio (penalità se il numero
-di tappe eccede la linea guida per la durata scelta):
+Il costo assume un solo volo internazionale verso la tappa d'ingresso + i
+trasferimenti locali, non un volo per tappa. Linee guida durata→tappe (non
+regole assolute, influenzano solo il punteggio):
 
 | Durata | Tappe consigliate |
 |---|---|
-| 2-4 giorni | 1 |
+| 2-4 giorni | 1 (zero viaggi combinati è il comportamento atteso) |
 | 5-7 giorni | 1-2 |
 | 8-10 giorni | 2-3, solo se sensate |
 | 11-14 giorni | 2-4, solo con logistica molto buona |
 | 15+ giorni | itinerari più articolati |
 
-Per un viaggio di 2-3 giorni, il Trip Builder mostrerà correttamente **zero**
-viaggi combinati: è il comportamento atteso, non un errore — una destinazione
-sola ben vissuta batte sempre una combinazione forzata.
+**Ritmo** (`pace_score`, in `destinations.py`): mescola `activity_level`,
+`adventure_score` e l'inverso di `relax_score` — il solo `activity_level`
+avrebbe dato gruppi inutili (42 destinazioni su 79 valgono 2). Etichetta
+(`pace_label_for_score`) su tre soglie: 32 Rilassato / 35 Dinamico / 12
+Intenso sul dataset attuale. Per un itinerario è la media del `pace_score`
+delle tappe, con le stesse soglie condivise.
 
-### Raffinamento dei viaggi combinati
-
-I pulsanti "🧳 Meno spostamenti", "🗺️ Più destinazioni", "🧘 Più rilassato",
-"⚡ Più intenso", "⏱️ Ottimizza il tempo" modificano pesi e penalità interne
-del motore (`apply_trip_refinement()` in `trip_builder.py`), non ripetono il
-questionario — stesso principio del raffinamento per singola destinazione.
-
-### 🎲 Sorprendimi (unificato)
-
-Lo stesso pulsante "🎲 SORPRENDIMI" può restituire **sia** una destinazione
-singola **sia** un viaggio combinato (scelta casuale pesata verso le
-destinazioni), coerente con l'obiettivo del match ma volutamente meno ovvio
-del podio principale.
+**Raffinamento**: "Meno spostamenti", "Più destinazioni", "Più
+rilassato/intenso", "Ottimizza il tempo" modificano pesi/penalità interne
+(`apply_trip_refinement`), senza ripetere il questionario. 🎲 Sorprendimi è
+condiviso tra destinazioni e viaggi (scelta pesata verso le destinazioni).
 
 ---
 
-## 8. Estendere il dataset
+## 7. Dettagli di ogni meta
 
-Per aggiungere una destinazione, apri `destinations.py` e aggiungi un nuovo
-elemento a `RAW_DESTINATIONS` usando la funzione helper `_d(...)` con lo
-stesso schema delle altre voci, più una riga in `CLUSTER_BY_ID` se vuoi che
-partecipi a itinerari combinati. Non serve toccare `recommender.py`: il
-motore legge le colonne del DataFrame generato da `load_destinations_df()`,
-quindi scala naturalmente a 100+ destinazioni.
+Contenuto delle card, tutto derivato da dati già presenti — nessun nuovo
+campo dataset, nessuna fonte esterna:
 
-Per abilitare nuove combinazioni multi-tappa, aggiungi una rotta in
-`trip_routes.py` (`RAW_ROUTES`) tra le destinazioni interessate — senza una
-rotta autorata, il Trip Builder non le combinerà mai. Un nuovo trip template
-curato si aggiunge invece a `RAW_TRIP_TEMPLATES`.
-
----
-
-## 9. Fase 1 — export, costi, spiegazioni, timeline
-
-Obiettivo: rendere l'app più completa e rassicurante senza toccare lo
-scoring. Ogni feature è un modulo leggero che legge dati già calcolati.
-
-- **Export itinerario** (`export.py`, `trip_presentation.py`)
-  - Testo pronto per WhatsApp/Telegram (emoji, struttura chiara) per destinazioni e viaggi combinati.
-  - PDF scaricabile via `reportlab`; se non è installato, fallback silenzioso al solo testo (mai un errore).
-  - Stesso contenuto in entrambi i formati: il PDF è solo un layer di formattazione sopra il testo, non una fonte separata.
-
-- **Breakdown costi a 3 scenari + avviso budget** (`utils.cost_scenarios`, `budget_warning_message`)
-  - 🟢 Economico (hostel/1-2★, minimo del range — è anche l'unico scenario usato dallo scoring/hard
-    constraint, vedi sezione 3) · 🟡 Medio (3★/B&B, punto medio) · 🔴 Elevato (4-5★, massimo maggiorato
-    del 15%). Medio ed Elevato sono puramente informativi.
-  - Avviso amichevole se lo scenario Medio sfora il budget di oltre il 15%.
-  - Per i viaggi combinati il totale include già i trasferimenti (nessun calcolo separato).
-  - I range di costo (volo da Italia + hotel + cibo + attività, per la durata consigliata) sono stime
-    statiche calibrate su medie di mercato realistiche 2023-2025, non aggiornate dinamicamente.
-
-- **Spiegazione "Perché questa combinazione"** (`trip_presentation.generate_trip_explanation`)
-  - 2-4 frasi generate dai dati reali dell'itinerario: tempo di trasferimento, Travel Efficiency, mood coverage, cluster geografico, punteggi per tappa.
-  - Segnala un compromesso onesto quando una tappa pesa meno delle altre sul match.
-
-- **Toggle modalità risultati + empty state curati**
-  - Selettore 🌍 Solo destinazioni / ✈️ Solo viaggi combinati / 🔀 Entrambi.
-  - Empty state positivo ("una destinazione ben vissuta resta la scelta migliore") invece di un messaggio tecnico quando un viaggio combinato non aggiunge valore.
-
-- **Timeline visuale semplice** (`trip_presentation.generate_timeline_segments`)
-  - Blocchi colorati distinti per giorni di esplorazione e giorni di trasferimento, con icona del mezzo (✈️/🚄/🚌/⛴️).
-
----
-
-## 10. Tier 2 — Travel Style, avvisi, confronto viaggi
-
-- **Travel Style bars** (`insights.travel_style_scores` / `travel_style_scores_for_stops`)
-  - 5 barre (Avventura, Relax, Cultura, Social, Lusso) lette dai punteggi già presenti nel dataset — non è il Travel DNA (quello descrive l'utente, questo la meta).
-  - Per i viaggi combinati: media tra le tappe, per descrivere il carattere complessivo dell'itinerario.
-
-- **Avvisi contestuali intelligenti** (`insights.destination_warnings` / `trip_warnings`)
-  - Trasferimento lungo (> 4.5h), meta molto gettonata nel periodo scelto (`christmas_score`/`new_year_score`), esperienza dipendente dal meteo (es. mongolfiera, aurora boreale), sforamento budget.
-  - Un solo box consolidato per card, tono non allarmistico.
-
-- **Confronto tra viaggi combinati** (`trip_builder.compare_trips`)
-  - Stesso principio del confronto destinazioni già esistente, esteso ai viaggi (fino a 2 alla volta).
-  - Legge dall'intero pool di candidati generati, non solo dal Top N mostrato in pagina.
-
----
-
-## 11. Tier 3 — checklist, modalità speciali, condivisione social, anti-FOMO
-
-- **Checklist pratica automatica** (`checklist.py`)
-  - 🎒 Cosa portare (da temperature min/max e tag come neve/spiaggia/trekking), 📄 Documenti tipici (per area geografica), 💡 Consigli pratici rapidi (riusa i `practical_tips` già curati nel dataset + una nota se il periodo è natalizio).
-  - Per i viaggi combinati aggrega clima, area più "esigente" e consigli di tutte le tappe.
-
-- **Modalità "Primo viaggio da solo" e "Regalo/Sorpresa"** (`app.py`, `handle_quick_start` / `render_gift_surprise`)
-  - "🧳 Primo viaggio da solo/a": precompila il questionario con area Europa, volo max 3h, comfort medio, socialità media — facilità logistica alta senza toccare lo scoring.
-  - "🎁 Regalo/Sorpresa": nasconde una destinazione dietro un bottone "Scopri il regalo"; una volta rivelata resta fissa in sessione (non si rigenera ad ogni click successivo).
-
-- **Card viaggio/destinazione condivisibile** (`social_card.py`)
-  - Immagine PNG (formato verticale, gradiente sul brand dell'app) con nome, match %, un'esperienza WOW e il costo, generata con Pillow.
-  - Didascalia testuale breve e curata per i social, volutamente diversa dal riepilogo dettagliato di `export.py` (quello è un itinerario da leggere, questa è un teaser da postare).
-  - Se Pillow non è disponibile, fallback automatico alla sola didascalia testuale.
-
-- **Anti-FOMO leggero** (`insights.discarded_destination_alternatives` / `discarded_trip_alternatives`)
-  - 1-2 alternative valutate ma non mostrate, con una frase onesta e specifica sul perché (budget, distanza di volo, durata, periodo, o la componente di Feasibility più debole per i viaggi).
-  - Riusa dati già calcolati (`compromise_reasons`, componenti di Feasibility): nessun nuovo criterio di scoring introdotto.
-
-- **Facilità organizzativa (1-5)** (`insights.organizational_ease` / `trip_organizational_ease`)
-  - Calcolata (non un nuovo campo nel dataset) da area geografica, ore di volo e `comfort_level`.
-  - Per i viaggi combinati: il minimo tra le tappe (la più complessa "detta il ritmo"), con una piccola penalità per ogni tappa oltre la prima.
-
----
-
-## 12. Upgrade 3 — ritmo, stagionalità, feature narrative
-
-### Ritmo del viaggio (Rilassato / Dinamico / Intenso)
-
-`destinations.py` deriva due colonne nuove senza toccare i record autorati:
-`pace_score` (0-100) e `pace` (etichetta). La formula mescola `activity_level`,
-`adventure_score` e l'inverso di `relax_score`: usare il solo `activity_level`
-avrebbe dato gruppi inutili (42 destinazioni su 79 valgono 2). Distribuzione
-risultante: 32 Rilassato / 35 Dinamico / 12 Intenso.
-
-Il ritmo è una componente di scoring (vedi sezione 3), un badge nelle card e
-una colonna nel confronto. Per gli itinerari è la media delle tappe
-(`trip_builder`, via `pace_label_for_score` — soglie condivise, non duplicate).
-
-### Stagionalità dei costi
-
-I range del dataset restano una **media annua**. `SEASONAL_COST_FACTORS`
-(in `destinations.py`) li corregge per mese secondo il profilo della meta —
-`beach`, `ski`, `tropical`, `city` — assegnato da `_seasonal_profile()` leggendo
-punteggi già presenti. Creta passa da 470 € a 646 € in agosto e 376 € a gennaio;
-Zermatt fa il percorso opposto.
-
-`seasonal_cost_factor(profile, months)` restituisce **1.0 senza mesi**: chi non
-indica un periodo vede esattamente i numeri di prima. Lo usano
-`recommender.seasonal_cost_min` (scoring, hard constraint e buffer budget) e
-`trip_builder.seasonal_trip_cost_min`, così destinazioni e itinerari non possono
-dare risposte diverse sullo stesso mese.
-
-### Feature di lettura (`insights.py`, `checklist.py`, `export.py`)
-
-- **Travel DNA vs meta** (`dna_vs_destination`, `dna_alignment_summary`) — confronto
-  dimensione per dimensione, con stato allineato / offre di più / offre meno.
-- **Giornata tipo** (`typical_day`) — mattina/pomeriggio/sera dedotti dai tag,
-  più un'esperienza WOW. Non è un itinerario: è un assaggio di atmosfera.
+- **Spiegazione narrativa** (`insights.narrative_explanation`) — 2-3 frasi
+  costruite su mood coperti, stagione, margine di budget e Travel DNA.
+  Fallback su `explain_match` (§3) se manca materiale.
+- **Giornata tipo** (`typical_day`) — mattina/pomeriggio/sera dedotti dai
+  tag, più un'esperienza WOW curata a mano per la sera. Non è un
+  itinerario: è un assaggio di atmosfera.
 - **Cosa ti porti a casa** (`emotional_takeaways`) — 3 highlight emotivi dai
-  tratti sopra 65, il contraltare della checklist.
-- **Stagionalità visuale** (`seasonality_months`, `seasonality_note`) — striscia
-  dei 12 mesi con i migliori evidenziati e il mese scelto contornato.
-- **Spiegazione narrativa** (`narrative_explanation`) — 2-3 frasi da mood,
-  stagione, margine di budget e DNA. Fallback su `explain_match` se manca materiale.
-- **Alternative accessibili** (`accessible_alternatives`) — per ogni meta fuori
-  budget, 1-2 ripieghi nello stesso cluster/mood con quanto si risparmia.
-- **Avvisi per modalità viaggiatore** (`traveller_mode_warnings`) — solo/coppia/
-  gruppo/famiglia cambiano quali avvisi hanno senso.
-- **Checklist smart** — due sezioni nuove ("Cosa lasciare a casa", "Cose che si
-  dimenticano spesso") che dipendono da comfort, durata, clima e area, più un
-  blocco dedicato al primo viaggio da solo/a.
-- **Export stories** (`export_destination_as_stories`) — testo cortissimo per
-  storie/status, diverso sia dal riepilogo sia dalla didascalia social.
+  tratti sopra 65, contraltare della checklist pratica.
+- **Stagionalità visuale** (`seasonality_months`, `seasonality_note`) —
+  striscia dei 12 mesi con i migliori evidenziati e il mese scelto
+  contornato.
+- **Travel Style** (`travel_style_scores`) — 5 barre (Avventura, Relax,
+  Cultura, Social, Lusso) che descrivono la *meta* — diverso dal Travel DNA,
+  che descrive l'utente (§4).
+- **Avvisi contestuali** (`destination_warnings` / `trip_warnings`) —
+  trasferimento lungo, affollamento nel periodo festivo scelto, esperienza
+  meteo-dipendente, sforamento budget: un solo box consolidato, tono non
+  allarmistico.
+- **Avvisi per modalità viaggiatore** (`traveller_mode_warnings`) — solo/
+  coppia/gruppo/famiglia (§8) cambiano quali avvisi hanno senso (es. meta
+  poco social per chi viaggia solo, volo lungo con bambini).
+- **Checklist smart** (`checklist.py`) — 🎒 Cosa portare, 📄 Documenti, 🚫
+  Cosa lasciare a casa, 🤦 Cose che si dimenticano spesso, 💡 Consigli
+  pratici; dipende da clima, comfort, durata, area, e aggiunge una sezione
+  dedicata per il primo viaggio da solo/a.
+- **Facilità organizzativa** (`organizational_ease`, 1-5) — da area
+  geografica, ore di volo, comfort_level. Per i viaggi combinati: il minimo
+  tra le tappe meno una penalità per ogni tappa oltre la prima. Filtrabile
+  nel questionario ("quanto vuoi che sia semplice da organizzare").
+- **Anti-FOMO** (`discarded_destination_alternatives` /
+  `discarded_trip_alternatives`) — 1-2 alternative valutate ma non mostrate,
+  con la ragione onesta e specifica del perché.
+- **Alternative accessibili** (`accessible_alternatives`) — per ogni meta
+  fuori budget, 1-2 ripieghi nello stesso cluster/mood con un costo
+  Economico più basso o un volo più corto, e quanto si risparmia.
 
-### Interfaccia
+---
 
-Palette "cielo" (#4A90E2 / #E3F2FD / #1E88E5, testo #1A237E) applicata a
-`.streamlit/config.toml` e al CSS globale. Home con hero centrato, questionario
-in 8 card numerate, risultati con dettagli collassati. Nuove pagine:
-**I miei viaggi** (preferiti, radar di confronto, tabella costi) e
-**Sorpresa controllata** (2-3 vincoli duri, poi pesca una meta meno ovvia).
+## 8. Modalità di ricerca
 
-Il radar dei Travel Style è **SVG inline**: nessuna libreria di grafici in più,
-e si tinge con la palette dell'app.
+- **Quick start** — scorciatoie in home che precompilano il questionario
+  (es. "Voglio staccare e stare al caldo") senza toccare lo scoring.
+- **Primo viaggio da solo/a** — area Europa, volo max 3h, comfort/socialità
+  medi come default; sblocca checklist e avvisi dedicati (§7) e un
+  suggerimento di alloggio in linea con la modalità.
+- **Modalità viaggiatore** (Solo / Coppia / Gruppo / Famiglia, derivata da
+  "Con chi parti?") — influenza avvisi e suggerimento di alloggio, mai lo
+  scoring di base.
+- **Regalo/Sorpresa** — nasconde una destinazione dietro "Scopri il regalo";
+  rivelata, resta fissa in sessione (non si rigenera ad ogni click).
+- **Sorpresa controllata** — l'utente fissa 2-3 vincoli **duri** (budget
+  massimo, volo massimo, esclusioni tassative come "niente neve") che
+  filtrano il pool *prima* della pesca, poi il motore sceglie una meta
+  coerente ma meno ovvia. Diversa da 🎲 Sorprendimi: qui i vincoli sono
+  espliciti e pochi, non le preferenze complete del questionario.
+
+---
+
+## 9. Confronto e "I miei viaggi"
+
+- **Confronto destinazioni/viaggi** — fino a 3 destinazioni o 2 viaggi
+  affiancati: un **radar SVG inline** dei Travel Style (nessuna libreria di
+  grafici aggiunta) più una tabella numerica.
+- **I miei viaggi** — pagina dedicata ai preferiti (❤️ dalle card), con lo
+  stesso radar di confronto e una tabella costi/ritmo/durata affiancata.
+  Non richiede un account: vive in `st.session_state` + il file `.json`
+  scaricabile.
+
+---
+
+## 10. Export e condivisione
+
+- **Riepilogo testuale** (`export.py`, `trip_presentation.py`) — pronto per
+  WhatsApp/Telegram, per destinazioni e viaggi combinati.
+- **PDF** — via `reportlab`; se non installato, fallback silenzioso al solo
+  testo (mai un errore).
+- **Versione "stories"** (`export_destination_as_stories`) — testo
+  cortissimo per storie/status, diverso sia dal riepilogo (da leggere) sia
+  dalla didascalia social (accompagna un'immagine).
+- **Card social** (`social_card.py`) — immagine PNG verticale con nome,
+  match %, un'esperienza WOW e il costo, generata con Pillow (fallback alla
+  sola didascalia se non disponibile).
+
+---
+
+## 11. Interfaccia
+
+Palette "cielo" applicata a `.streamlit/config.toml` e al CSS globale in
+`app.py` (`inject_css`):
+
+| Ruolo | Colore |
+|---|---|
+| Primary | `#4A90E2` |
+| Primary light (sfondi) | `#E3F2FD` |
+| Accent (bottoni, focus) | `#1E88E5` |
+| Testo principale | `#1A237E` |
+| Testo secondario | `#546E7A` |
+| Success / Warning | `#43A047` / `#FB8C00` |
+
+- **Home**: hero centrato con CTA singola, scorciatoie in griglia.
+- **Questionario**: 8 domande in card distinte e numerate ("Domanda X di 8"),
+  dentro un unico form (non un wizard multi-step).
+- **Risultati**: vista compatta di default — pro/contro, breakdown costi,
+  timeline e checklist dietro expander; prima cosa visibile è match % +
+  "Da X €".
+- Card individuate via un marcatore invisibile (`span` con classe dedicata,
+  primo figlio del container) anziché le classi auto-generate di Streamlit,
+  che cambiano hash a ogni build.
+
+---
+
+## 12. Estendere il dataset
+
+Per una nuova destinazione: aggiungi un elemento a `RAW_DESTINATIONS` in
+`destinations.py` con l'helper `_d(...)`, più una riga in `CLUSTER_BY_ID` se
+deve partecipare a itinerari combinati. `pace_score` e `seasonal_profile` si
+calcolano da soli — non serve autorarli. Nessuna modifica al motore:
+`recommender.py` legge le colonne del DataFrame, non destinazioni hardcoded.
+
+Per nuove combinazioni multi-tappa: aggiungi una rotta in `trip_routes.py`
+(`RAW_ROUTES`) — senza rotta autorata, il Trip Builder non le combinerà mai.
+Un trip template curato si aggiunge a `RAW_TRIP_TEMPLATES`.
+
+---
+
+## 13. Note di robustezza
+
+- Budget, durata, clima o tag mancanti non causano errori: ogni componente
+  ha un valore neutro di fallback.
+- Zero destinazioni entro i criteri stretti → l'app mostra comunque le
+  migliori alternative con il compromesso spiegato.
+- Il Trip Builder non genera mai eccezioni se non esistono itinerari
+  fattibili: mostra un messaggio che spiega perché una meta singola è la
+  scelta migliore in quel caso.
+- Salvataggio via file `.json` scaricabile (sidebar) e ricaricabile in
+  home — resta sul dispositivo del visitatore, mai sul server: su una
+  versione online condivisa da più persone, un salvataggio unico lato
+  server finirebbe sovrascritto a ogni utente.
+- Filtro di facilità organizzativa (§7): se azzera i risultati viene
+  ignorato invece di mostrare una pagina vuota.
