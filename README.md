@@ -26,12 +26,13 @@ davvero fattibili, mai solo perché il punteggio è alto (§6).
 5. [Costi: scenari, dati statici, stagionalità](#5-costi-scenari-dati-statici-stagionalità)
 6. [Trip Builder — viaggi combinati](#6-trip-builder--viaggi-combinati)
 7. [Dettagli di ogni meta](#7-dettagli-di-ogni-meta)
-8. [Modalità di ricerca](#8-modalità-di-ricerca)
-9. [Confronto e "I miei viaggi"](#9-confronto-e-i-miei-viaggi)
-10. [Export e condivisione](#10-export-e-condivisione)
-11. [Interfaccia](#11-interfaccia)
-12. [Estendere il dataset](#12-estendere-il-dataset)
-13. [Note di robustezza](#13-note-di-robustezza)
+8. [Itinerari classici](#8-itinerari-classici)
+9. [Modalità di ricerca](#9-modalità-di-ricerca)
+10. [Confronto e "I miei viaggi"](#10-confronto-e-i-miei-viaggi)
+11. [Export e condivisione](#11-export-e-condivisione)
+12. [Interfaccia](#12-interfaccia)
+13. [Estendere il dataset](#13-estendere-il-dataset)
+14. [Note di robustezza](#14-note-di-robustezza)
 
 ---
 
@@ -56,9 +57,10 @@ travelmatch/
 ├── trip_presentation.py    # spiegazioni, timeline ed export testuale dei viaggi combinati
 ├── destinations.py         # dataset locale (79 destinazioni) + ritmo/stagionalità derivati
 ├── insights.py             # Travel Style, DNA vs meta, giorno tipo, avvisi, anti-FOMO, facilità organizzativa
+├── itinerary.py            # itinerari classici giorno per giorno, mobilità, zone, prenotazioni
 ├── checklist.py            # checklist di viaggio (cosa portare/lasciare a casa, documenti, consigli)
 ├── utils.py                # costanti del questionario, Travel DNA, formattazione, scenari di costo
-├── export.py                # export testo/PDF/"stories" di destinazioni e viaggi combinati
+├── export.py               # export testo/PDF/"stories" di destinazioni e viaggi combinati
 ├── social_card.py          # immagine + didascalia "social" condivisibile
 ├── requirements.txt
 └── .streamlit/config.toml  # tema colori nativo Streamlit
@@ -77,9 +79,9 @@ Quattro livelli indipendenti:
 - **`recommender.py` / `trip_builder.py` — motore.** Puro Python + pandas,
   **zero dipendenze da Streamlit**: testabile in isolamento, riusabile in
   un'API o un altro frontend.
-- **`utils.py`, `insights.py`, `checklist.py`, `export.py`, `social_card.py`
-  — presentazione.** Leggono dati già calcolati dal motore e li trasformano
-  in testo/immagini per l'utente. Non alterano mai uno score.
+- **`utils.py`, `insights.py`, `itinerary.py`, `checklist.py`, `export.py`,
+  `social_card.py` — presentazione.** Leggono dati già calcolati dal motore e
+  li trasformano in testo/immagini per l'utente. Non alterano mai uno score.
 - **`app.py` — interfaccia.** Orchestrazione delle pagine via
   `st.session_state`, rendering delle card, CSS. Chiama gli altri moduli,
   non contiene logica propria di scoring.
@@ -135,7 +137,7 @@ costruzione. In UI questa frase è il fallback di `narrative_explanation()`
 **🎲 Sorprendimi**: `surprise_me()` filtra le mete con match ≥ 65% (soglia
 che scende se il pool è vuoto), esclude quelle già mostrate, e sceglie con
 un bias verso posizioni meno scontate del ranking — coerente ma raramente
-banale. **Sorpresa controllata** (§8) è la variante con vincoli duri
+banale. **Sorpresa controllata** (§9) è la variante con vincoli duri
 espliciti invece delle preferenze complete.
 
 ---
@@ -274,7 +276,7 @@ campo dataset, nessuna fonte esterna:
   meteo-dipendente, sforamento budget: un solo box consolidato, tono non
   allarmistico.
 - **Avvisi per modalità viaggiatore** (`traveller_mode_warnings`) — solo/
-  coppia/gruppo/famiglia (§8) cambiano quali avvisi hanno senso (es. meta
+  coppia/gruppo/famiglia (§9) cambiano quali avvisi hanno senso (es. meta
   poco social per chi viaggia solo, volo lungo con bambini).
 - **Checklist smart** (`checklist.py`) — 🎒 Cosa portare, 📄 Documenti, 🚫
   Cosa lasciare a casa, 🤦 Cose che si dimenticano spesso, 💡 Consigli
@@ -293,7 +295,60 @@ campo dataset, nessuna fonte esterna:
 
 ---
 
-## 8. Modalità di ricerca
+## 8. Itinerari classici
+
+`itinerary.py` costruisce un itinerario **standard** (non personalizzato sulle
+preferenze) giorno per giorno, in mattina / pomeriggio / sera. Risponde alla
+domanda "cosa ci faccio in N giorni", che viene prima di "è la meta giusta".
+
+**Dove:** expander **"🗺️ Itinerario classico"** nel dettaglio della card
+destinazione, subito dopo la Giornata tipo.
+
+### Cosa è calcolato e cosa è curato
+
+Il dataset non contiene attrazioni con orari, zone urbane, prezzi dei
+trasporti o tempi di coda. Inventarli per 79 destinazioni avrebbe significato
+presentare dati fabbricati come informazione di viaggio, quindi:
+
+| Elemento | Origine |
+|---|---|
+| Ancore delle giornate | `wow_experiences` curate nel dataset (una per giorno, marcate ★) |
+| Riempimento tra le ancore | Blocchi generici derivati dai tag — mai nomi di luoghi inventati |
+| Durate e ritmo | **Calcolati**: ore di luce per latitudine e stagione, durata per categoria di attività, tempo di trasferimento |
+| Cosa prenotare | `practical_tips` curati + tipo di esperienza + stagione |
+| Mobilità e zone | Descritte per **categoria** (a piedi / mezzi / serve l'auto / resort / tour), non con linee, prezzi o toponimi |
+
+### Vincoli di tempo rispettati
+
+- **Max un'attività per slot** → 2 attività principali di giorno + una serale.
+- **Ore di luce reali**: `DAYLIGHT_HOURS` per banda di latitudine × mese. A
+  Rovaniemi a dicembre ci sono 3.5 ore di luce e l'itinerario lo dichiara.
+  Il pavimento a 4.5h evita di svuotare la giornata: sotto il circolo polare
+  d'inverno le attività (aurora, slitte, saune) si fanno al buio o al chiuso.
+- **Gli spostamenti contano**: 18-54 minuti medi a seconda del profilo di
+  mobilità, già scalati dal budget di ogni giornata.
+- **Mezza giornata dichiarata**: un'attività ≥ 4h occupa mattina *e*
+  pomeriggio, invece di impilarci sopra dell'altro.
+- **Durata**: 3 o 5 giorni, riportati dentro `days_min`-`days_max` della meta.
+
+### Varianti per stile
+
+Selettore in cima all'expander: **Standard · Relax · Intenso · Foodie · Con
+bambini**. Cambiano tetto orario, numero di attività, quota di pause e quali
+tag hanno priorità (foodie → più cibo; relax e famiglia → giornate più corte,
+una attività al giorno). "Intenso" ha un tetto a 10 ore: oltre non è intenso,
+è una giornata che non regge.
+
+### Confronto pratico
+
+**Dove:** pagina Confronto, sotto radar e tabelle → expander **"🗺️ Cosa farei
+negli stessi giorni, qui vs lì"**. Itinerari della **stessa durata** affiancati
+(anche fuori dal range consigliato della meta — è il senso della domanda), con
+l'avviso esplicito quando quella durata non è adatta.
+
+---
+
+## 9. Modalità di ricerca
 
 - **Quick start** — scorciatoie in home che precompilano il questionario
   (es. "Voglio staccare e stare al caldo") senza toccare lo scoring.
@@ -313,7 +368,7 @@ campo dataset, nessuna fonte esterna:
 
 ---
 
-## 9. Confronto e "I miei viaggi"
+## 10. Confronto e "I miei viaggi"
 
 - **Confronto destinazioni/viaggi** — fino a 3 destinazioni o 2 viaggi
   affiancati: un **radar SVG inline** dei Travel Style (nessuna libreria di
@@ -325,7 +380,7 @@ campo dataset, nessuna fonte esterna:
 
 ---
 
-## 10. Export e condivisione
+## 11. Export e condivisione
 
 - **Riepilogo testuale** (`export.py`, `trip_presentation.py`) — pronto per
   WhatsApp/Telegram, per destinazioni e viaggi combinati.
@@ -340,7 +395,7 @@ campo dataset, nessuna fonte esterna:
 
 ---
 
-## 11. Interfaccia
+## 12. Interfaccia
 
 Palette "cielo" applicata a `.streamlit/config.toml` e al CSS globale in
 `app.py` (`inject_css`):
@@ -366,7 +421,7 @@ Palette "cielo" applicata a `.streamlit/config.toml` e al CSS globale in
 
 ---
 
-## 12. Estendere il dataset
+## 13. Estendere il dataset
 
 Per una nuova destinazione: aggiungi un elemento a `RAW_DESTINATIONS` in
 `destinations.py` con l'helper `_d(...)`, più una riga in `CLUSTER_BY_ID` se
@@ -380,7 +435,7 @@ Un trip template curato si aggiunge a `RAW_TRIP_TEMPLATES`.
 
 ---
 
-## 13. Note di robustezza
+## 14. Note di robustezza
 
 - Budget, durata, clima o tag mancanti non causano errori: ogni componente
   ha un valore neutro di fallback.

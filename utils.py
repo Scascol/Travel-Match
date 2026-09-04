@@ -6,7 +6,6 @@ puo' essere testato e riusato in isolamento.
 
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -37,9 +36,6 @@ PERIOD_OPTIONS = [
 ]
 
 CHRISTMAS_PERIODS = {"🎄 Natale", "🎆 Capodanno", "🎄🎆 Natale + Capodanno"}
-
-# Riferimento esplicito richiesto: Natale 2026 / Capodanno 2027
-CHRISTMAS_2026_RANGE = (date(2026, 12, 18), date(2027, 1, 6))
 
 DURATION_BANDS = {
     "2-3 giorni": (2, 3),
@@ -283,10 +279,6 @@ def compute_travel_dna(preferences: dict[str, Any]) -> dict[str, int]:
         "☀️ Warmth": warmth,
     }
     return {k: max(0, min(100, int(v))) for k, v in raw.items()}
-
-
-def travel_dna_top_traits(dna: dict[str, int], n: int = 3) -> list[str]:
-    return [k for k, _ in sorted(dna.items(), key=lambda kv: kv[1], reverse=True)[:n]]
 
 
 def travel_dna_description(dna: dict[str, int]) -> str:

@@ -21,7 +21,7 @@ import streamlit as st
 
 import random
 
-from destinations import load_destinations_df, TAG_LABELS
+from destinations import load_destinations_df, seasonal_cost_factor, TAG_LABELS
 from recommender import (
     apply_refinement,
     compare_destinations,
@@ -46,6 +46,17 @@ from export import (
     export_destination_as_stories,
     export_destination_as_text,
     export_trip_as_text_with_budget,
+)
+from itinerary import (
+    SLOT_AFTERNOON,
+    SLOT_EVENING,
+    SLOT_MORNING,
+    STYLE_PROFILES,
+    booking_notes,
+    build_standard_itinerary,
+    compare_itineraries,
+    itinerary_rationale,
+    main_zones,
 )
 from insights import (
     accessible_alternatives,
@@ -625,6 +636,58 @@ def inject_css(christmas_mode: bool = False) -> None:
             color: {accent};
         }}
         .tm-day-text {{ font-size: 0.92rem; color: {ink}; }}
+
+        /* Itinerario classico: una card per giorno, righe per slot. */
+        .tm-itin-day {{
+            border: 1px solid {line};
+            border-radius: 12px;
+            padding: 0.6rem 0.9rem;
+            margin-bottom: 0.55rem;
+            background: #FFFFFF;
+        }}
+        .tm-itin-daytitle {{
+            font-family: {display_font};
+            font-weight: 700;
+            font-size: 0.9rem;
+            color: {accent};
+            margin-bottom: 0.35rem;
+        }}
+        .tm-itin-row {{
+            display: flex;
+            gap: 0.7rem;
+            align-items: baseline;
+            padding: 0.22rem 0;
+        }}
+        .tm-itin-slot {{
+            min-width: 5.6rem;
+            flex-shrink: 0;
+            font-size: 0.78rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: {ink_muted};
+        }}
+        .tm-itin-text {{ font-size: 0.92rem; color: {ink}; }}
+        .tm-itin-free {{ font-size: 0.88rem; color: {ink_muted}; font-style: italic; }}
+        .tm-itin-hours {{ font-size: 0.78rem; color: {ink_muted}; white-space: nowrap; }}
+        .tm-itin-star {{ color: {warning}; }}
+        .tm-itin-tag {{
+            display: inline-block;
+            font-size: 0.7rem;
+            font-weight: 600;
+            padding: 0.08rem 0.45rem;
+            border-radius: 999px;
+            background: {primary_light};
+            color: {accent};
+        }}
+        .tm-itin-why {{
+            font-size: 0.84rem;
+            color: {ink_muted};
+            font-style: italic;
+            border-left: 3px solid {line_strong};
+            padding-left: 0.7rem;
+            margin-top: 0.6rem;
+        }}
 
         .tm-takeaway {{
             padding: 0.45rem 0.8rem;
@@ -1492,6 +1555,101 @@ def render_typical_day(row: pd.Series) -> None:
     st.markdown(rows, unsafe_allow_html=True)
 
 
+def _is_high_season(row: pd.Series, months: list[int] | None) -> bool:
+    """Alta stagione = il costo del periodo scelto è sopra la media annua di
+    almeno il 15% (vedi destinations.SEASONAL_COST_FACTORS). Riusa il segnale
+    già calcolato per i costi invece di inventare un calendario a parte."""
+    if not months:
+        return False
+    return seasonal_cost_factor(row.get("seasonal_profile", "city"), months) >= 1.15
+
+
+def render_standard_itinerary(row: pd.Series, dest_id: int, key_suffix: str) -> None:
+    """Expander "Itinerario classico": mobilità, zone, giorno per giorno,
+    cosa prenotare e la logica dietro il ritmo scelto.
+
+    Non è un itinerario personalizzato sulle preferenze: è la traccia
+    standard della meta, quella che serve per capire "cosa ci faccio in N
+    giorni" prima ancora di sapere se è la meta giusta."""
+    prefs = current_prefs()
+    months = requested_months(prefs)
+
+    with st.expander("🗺️ Itinerario classico"):
+        style = st.radio(
+            "Stile",
+            list(STYLE_PROFILES.keys()),
+            format_func=lambda k: STYLE_PROFILES[k]["label"],
+            horizontal=True,
+            key=f"itin_style_{dest_id}_{key_suffix}",
+            label_visibility="collapsed",
+        )
+        plan = build_standard_itinerary(row, style=style, months=months)
+        st.caption(plan["style_note"])
+
+        # --- Come ci si muove -------------------------------------------
+        mob = plan["mobility"]
+        st.markdown('<p class="tm-section-title">🚏 Come ci si muove</p>', unsafe_allow_html=True)
+        st.markdown(f"**{mob['label']}** — {mob['text']}")
+
+        zones = main_zones(row)
+        if zones["zones"]:
+            st.markdown('<p class="tm-section-title">📍 Zone principali</p>', unsafe_allow_html=True)
+            st.caption(zones["spread"])
+            for zone in zones["zones"]:
+                st.markdown(f"- **{zone['name']}** — {zone['text']}")
+
+        # --- Da prenotare ------------------------------------------------
+        notes = booking_notes(row, months, _is_high_season(row, months))
+        if notes:
+            st.markdown('<p class="tm-section-title">🎫 Da prenotare</p>', unsafe_allow_html=True)
+            for note in notes:
+                st.markdown(f"- {note}")
+
+        # --- I giorni ----------------------------------------------------
+        header = f"🗓️ {plan['n_days']} giorni · max {plan['day_budget_hours']:.0f}h di attività al giorno"
+        if plan["daylight_is_binding"]:
+            header += f" · solo {plan['daylight_hours']:.0f}h di luce in questo periodo"
+        st.markdown(f'<p class="tm-section-title">{header}</p>', unsafe_allow_html=True)
+
+        for day in plan["days"]:
+            rows_html = ""
+            for slot in (SLOT_MORNING, SLOT_AFTERNOON, SLOT_EVENING):
+                item = day["slots"].get(slot)
+                if item is None:
+                    rows_html += (
+                        f'<div class="tm-itin-row">'
+                        f'<span class="tm-itin-slot">{slot.capitalize()}</span>'
+                        f'<span class="tm-itin-free">libero</span></div>'
+                    )
+                    continue
+                if item.get("continued"):
+                    rows_html += (
+                        f'<div class="tm-itin-row">'
+                        f'<span class="tm-itin-slot">{slot.capitalize()}</span>'
+                        f'<span class="tm-itin-free">↑ prosegue l\'attività della mattina</span></div>'
+                    )
+                    continue
+                star = ' <span class="tm-itin-star">★</span>' if item["anchor"] else ""
+                half = ' <span class="tm-itin-tag">mezza giornata</span>' if item["half_day"] else ""
+                rows_html += (
+                    f'<div class="tm-itin-row">'
+                    f'<span class="tm-itin-slot">{slot.capitalize()}</span>'
+                    f'<span class="tm-itin-text">{item["text"]}{star}{half} '
+                    f'<span class="tm-itin-hours">~{item["hours"]:g}h</span></span></div>'
+                )
+            st.markdown(
+                f'<div class="tm-itin-day">'
+                f'<div class="tm-itin-daytitle">Giorno {day["day"]}</div>{rows_html}</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.caption("★ = esperienza WOW curata per questa meta.")
+        st.markdown(
+            f'<p class="tm-itin-why">{itinerary_rationale(row, plan)}</p>',
+            unsafe_allow_html=True,
+        )
+
+
 def render_takeaways(row: pd.Series) -> None:
     takeaways = emotional_takeaways(row)
     if not takeaways:
@@ -1691,6 +1849,9 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
 
     render_seasonality_strip(row, requested_months(prefs))
     render_typical_day(row)
+    # L'itinerario classico sta subito dopo la giornata tipo: quella dà il
+    # sapore di una giornata, questo dice cosa ci si fa in tutto il viaggio.
+    render_standard_itinerary(row, dest_id, f"{rank}_{surprise}")
 
     st.markdown('<p class="tm-section-title">⭐ Esperienze WOW</p>', unsafe_allow_html=True)
     for wow in row["wow_experiences"][:3]:
@@ -2095,6 +2256,43 @@ def render_refinement_bar() -> None:
 # Confronto
 # ---------------------------------------------------------------------------
 
+def render_itinerary_comparison(names: pd.DataFrame) -> None:
+    """"Cosa farei in N giorni qui vs lì": itinerari della stessa durata
+    affiancati. Il punto non è quale meta abbia il punteggio più alto — è
+    come si riempie concretamente la stessa settimana in posti diversi."""
+    if len(names) < 2:
+        return
+
+    with st.expander("🗺️ Cosa farei negli stessi giorni, qui vs lì", expanded=False):
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            days = st.slider("Giorni a disposizione", 2, 10, 4, key="cmp_itin_days")
+        with c2:
+            style = st.radio(
+                "Stile", list(STYLE_PROFILES.keys()),
+                format_func=lambda k: STYLE_PROFILES[k]["label"],
+                horizontal=True, key="cmp_itin_style", label_visibility="collapsed",
+            )
+
+        months = requested_months(current_prefs())
+        comparison = compare_itineraries(
+            [row for _, row in names.iterrows()], days=days, style=style, months=months,
+        )
+
+        for col, item in zip(st.columns(len(comparison["items"])), comparison["items"]):
+            with col:
+                st.markdown(f"**{item['name']}**")
+                st.caption(item["fit"])
+                st.caption(f"{item['mobility']} · max {item['day_budget']:.0f}h/giorno")
+                for day in item["itinerary"]["days"]:
+                    entries = [
+                        v["text"] for k, v in day["slots"].items()
+                        if v is not None and not v.get("continued")
+                    ]
+                    summary = " · ".join(entries) if entries else "libero"
+                    st.markdown(f"**G{day['day']}** — {summary}")
+
+
 def render_comparison(scored_all: pd.DataFrame) -> None:
     ids = list(st.session_state["compare_ids"])
     if len(ids) < 2:
@@ -2120,6 +2318,8 @@ def render_comparison(scored_all: pd.DataFrame) -> None:
         )[:2]
         strengths_text = " e ".join(f"{s}" for s, _ in strengths)
         st.markdown(f"**{row['name']}** brilla soprattutto per {strengths_text.lower()}.")
+
+    render_itinerary_comparison(names)
 
     if st.button("🧹 Svuota confronto"):
         st.session_state["compare_ids"] = set()

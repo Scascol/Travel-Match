@@ -1957,6 +1957,3 @@ def load_destinations_df() -> pd.DataFrame:
     df = _validate_and_align_day_fields(df)
 
     return df
-
-
-DESTINATIONS_DF = load_destinations_df()

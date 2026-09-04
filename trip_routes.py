@@ -170,5 +170,4 @@ def load_trip_templates() -> list[dict]:
     return RAW_TRIP_TEMPLATES
 
 
-ROUTES_DF = load_routes_df()
 TRIP_TEMPLATES = load_trip_templates()
