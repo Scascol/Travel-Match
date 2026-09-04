@@ -53,10 +53,14 @@ from itinerary import (
     SLOT_MORNING,
     STYLE_PROFILES,
     booking_notes,
+    build_curated_itinerary,
     build_standard_itinerary,
+    build_trip_itinerary,
     compare_itineraries,
+    curated_variants,
     itinerary_rationale,
     main_zones,
+    trip_itinerary_variants,
 )
 from insights import (
     accessible_alternatives,
@@ -135,7 +139,7 @@ PEOPLE_HEADCOUNT = {"Solo": 1, "Coppia": 2, "Amici": 4, "Famiglia": 4, "Gruppo":
 # Stile
 # ---------------------------------------------------------------------------
 
-def inject_css(christmas_mode: bool = False) -> None:
+def inject_css() -> None:
     # Palette "cielo": azzurri per aria/leggerezza, navy per il testo (massima
     # leggibilità senza dover ricorrere al nero puro), verde/arancio riservati
     # a segnali di stato (successo/compromesso) così restano distinguibili
@@ -149,9 +153,6 @@ def inject_css(christmas_mode: bool = False) -> None:
     success_light = "#E8F5E9"
     warning = "#FB8C00"
     warning_light = "#FFF3E0"
-    festive = "#D32F2F" if christmas_mode else warning
-    festive_light = "#FDE7E7" if christmas_mode else warning_light
-    festive_border = "#F5B8B8" if christmas_mode else "#FFCC80"
     ink = "#1A237E"
     ink_muted = "#546E7A"
     line = primary_light
@@ -428,11 +429,6 @@ def inject_css(christmas_mode: bool = False) -> None:
             margin: 0.15rem 0.3rem 0.15rem 0;
             border: 1px solid {line_strong};
         }}
-        .tm-badge-festive {{
-            background: {festive_light};
-            color: {festive};
-            border: 1px solid {festive_border};
-        }}
         .tm-match-pill {{
             display: inline-block;
             font-family: {display_font};
@@ -496,11 +492,6 @@ def inject_css(christmas_mode: bool = False) -> None:
             padding: 0.7rem 1rem;
             border-left: 4px solid {primary};
             border-radius: 8px;
-        }}
-        .tm-surprise-box {{
-            background: linear-gradient(120deg, {primary_soft} 0%, {primary} 100%);
-            padding: 0.4rem;
-            border-radius: 20px;
         }}
         .tm-timeline-row {{
             display: flex;
@@ -637,12 +628,16 @@ def inject_css(christmas_mode: bool = False) -> None:
         }}
         .tm-day-text {{ font-size: 0.92rem; color: {ink}; }}
 
-        /* Itinerario classico: una card per giorno, righe per slot. */
+        /* Itinerario: una card per giorno, righe per slot. La separazione è
+        affidata a bordi e filetti invece che alle emoji — il bordo sinistro
+        marcato dà l'idea della sequenza dei giorni, il filetto tra le righe
+        tiene distinti mattina, pomeriggio e sera senza icone decorative. */
         .tm-itin-day {{
             border: 1px solid {line};
-            border-radius: 12px;
-            padding: 0.6rem 0.9rem;
-            margin-bottom: 0.55rem;
+            border-left: 3px solid {primary};
+            border-radius: 10px;
+            padding: 0.8rem 1rem;
+            margin-bottom: 0.9rem;
             background: #FFFFFF;
         }}
         .tm-itin-daytitle {{
@@ -650,14 +645,16 @@ def inject_css(christmas_mode: bool = False) -> None:
             font-weight: 700;
             font-size: 0.9rem;
             color: {accent};
-            margin-bottom: 0.35rem;
+            margin-bottom: 0.45rem;
         }}
         .tm-itin-row {{
             display: flex;
             gap: 0.7rem;
             align-items: baseline;
-            padding: 0.22rem 0;
+            padding: 0.55rem 0;
         }}
+        /* Solo TRA una riga e l'altra: il filetto separa, non incornicia. */
+        .tm-itin-row + .tm-itin-row {{ border-top: 1px solid {line}; }}
         .tm-itin-slot {{
             min-width: 5.6rem;
             flex-shrink: 0;
@@ -687,6 +684,30 @@ def inject_css(christmas_mode: bool = False) -> None:
             border-left: 3px solid {line_strong};
             padding-left: 0.7rem;
             margin-top: 0.6rem;
+        }}
+        /* Itinerari curati: modalita' di visita e base logistica. */
+        .tm-itin-how {{
+            display: block;
+            font-size: 0.82rem;
+            color: {ink_muted};
+            margin-top: 0.1rem;
+            line-height: 1.35;
+        }}
+        .tm-itin-move {{
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            color: {accent};
+            background: {primary_light};
+            border-radius: 999px;
+            padding: 0.1rem 0.55rem;
+            margin-bottom: 0.45rem;
+        }}
+        .tm-itin-forwho {{
+            font-size: 0.9rem;
+            color: {ink};
+            margin: 0.15rem 0 0.5rem 0;
         }}
 
         .tm-takeaway {{
@@ -1484,7 +1505,7 @@ def render_cost_scenarios(cost_min: float, cost_max: float) -> None:
     scopo informativo, per farsi un'idea di cosa cambia con un alloggio
     migliore — non influenzano mai lo score."""
     scenarios = cost_scenarios(cost_min, cost_max)
-    st.markdown('<p class="tm-section-title">💰 Scenari di costo / persona</p>', unsafe_allow_html=True)
+    st.markdown('<p class="tm-section-title">Scenari di costo / persona</p>', unsafe_allow_html=True)
     st.markdown(
         f'<div class="tm-scenario-row tm-scenario-economico"><span>🟢 Economico (hostel/1-2★)</span><span>{format_price(scenarios["economico"])}</span></div>'
         f'<div class="tm-scenario-row tm-scenario-medio"><span>🟡 Medio (3★/B&B)</span><span>{format_price(scenarios["medio"])}</span></div>'
@@ -1536,7 +1557,7 @@ def render_seasonality_strip(row: pd.Series, requested: list[int] | None) -> Non
         if m["month"] in requested_set:
             classes.append("tm-month-picked")
         cells += f'<span class="{" ".join(classes)}">{m["label"]}</span>'
-    st.markdown('<p class="tm-section-title">📅 Quando andarci</p>', unsafe_allow_html=True)
+    st.markdown('<p class="tm-section-title">Quando andarci</p>', unsafe_allow_html=True)
     st.markdown(f'<div class="tm-month-strip">{cells}</div>', unsafe_allow_html=True)
     note = seasonality_note(row, requested)
     if note:
@@ -1544,7 +1565,7 @@ def render_seasonality_strip(row: pd.Series, requested: list[int] | None) -> Non
 
 
 def render_typical_day(row: pd.Series) -> None:
-    st.markdown('<p class="tm-section-title">🕐 Una giornata tipo</p>', unsafe_allow_html=True)
+    st.markdown('<p class="tm-section-title">Una giornata tipo</p>', unsafe_allow_html=True)
     rows = "".join(
         f'<div class="tm-day-row">'
         f'<span class="tm-day-slot">{slot["icon"]} {slot["label"]}</span>'
@@ -1574,7 +1595,21 @@ def render_standard_itinerary(row: pd.Series, dest_id: int, key_suffix: str) -> 
     prefs = current_prefs()
     months = requested_months(prefs)
 
+    variants = curated_variants(row)
+
     with st.expander("🗺️ Itinerario classico"):
+        # --- Durata: solo dove esistono itinerari curati per piu' durate --
+        chosen_days = None
+        if variants:
+            chosen_days = st.radio(
+                "Durata",
+                [v["days"] for v in variants],
+                format_func=lambda d: f"{d} giorni",
+                horizontal=True,
+                key=f"itin_days_{dest_id}_{key_suffix}",
+                label_visibility="collapsed",
+            )
+
         style = st.radio(
             "Stile",
             list(STYLE_PROFILES.keys()),
@@ -1583,69 +1618,189 @@ def render_standard_itinerary(row: pd.Series, dest_id: int, key_suffix: str) -> 
             key=f"itin_style_{dest_id}_{key_suffix}",
             label_visibility="collapsed",
         )
-        plan = build_standard_itinerary(row, style=style, months=months)
-        st.caption(plan["style_note"])
+
+        plan = None
+        if variants:
+            plan = build_curated_itinerary(row, style=style, days=chosen_days, months=months)
+        if plan is None:
+            plan = build_standard_itinerary(row, style=style, months=months)
+
+        _render_itinerary_head(plan)
 
         # --- Come ci si muove -------------------------------------------
         mob = plan["mobility"]
-        st.markdown('<p class="tm-section-title">🚏 Come ci si muove</p>', unsafe_allow_html=True)
+        st.markdown('<p class="tm-section-title">Come ci si muove</p>', unsafe_allow_html=True)
         st.markdown(f"**{mob['label']}** — {mob['text']}")
 
-        zones = main_zones(row)
-        if zones["zones"]:
-            st.markdown('<p class="tm-section-title">📍 Zone principali</p>', unsafe_allow_html=True)
-            st.caption(zones["spread"])
-            for zone in zones["zones"]:
-                st.markdown(f"- **{zone['name']}** — {zone['text']}")
+        # Le zone generiche compaiono solo dove non conosciamo le basi reali:
+        # dire "Rethymno 1 notte → Chania 2" è un'informazione, dire
+        # "🏖️ Costa" quando i nomi li abbiamo, no.
+        if not _render_sleep_bases(plan):
+            zones = main_zones(row)
+            if zones["zones"]:
+                st.markdown('<p class="tm-section-title">Zone principali</p>', unsafe_allow_html=True)
+                st.caption(zones["spread"])
+                for zone in zones["zones"]:
+                    st.markdown(f"- **{zone['name']}** — {zone['text']}")
+
+        _render_itinerary_excluded(plan)
 
         # --- Da prenotare ------------------------------------------------
         notes = booking_notes(row, months, _is_high_season(row, months))
         if notes:
-            st.markdown('<p class="tm-section-title">🎫 Da prenotare</p>', unsafe_allow_html=True)
+            st.markdown('<p class="tm-section-title">Da prenotare</p>', unsafe_allow_html=True)
             for note in notes:
                 st.markdown(f"- {note}")
 
-        # --- I giorni ----------------------------------------------------
-        header = f"🗓️ {plan['n_days']} giorni · max {plan['day_budget_hours']:.0f}h di attività al giorno"
-        if plan["daylight_is_binding"]:
-            header += f" · solo {plan['daylight_hours']:.0f}h di luce in questo periodo"
-        st.markdown(f'<p class="tm-section-title">{header}</p>', unsafe_allow_html=True)
+        _render_itinerary_body(plan)
+        st.markdown(
+            f'<p class="tm-itin-why">{itinerary_rationale(row, plan)}</p>',
+            unsafe_allow_html=True,
+        )
 
-        for day in plan["days"]:
-            rows_html = ""
-            for slot in (SLOT_MORNING, SLOT_AFTERNOON, SLOT_EVENING):
-                item = day["slots"].get(slot)
-                if item is None:
-                    rows_html += (
-                        f'<div class="tm-itin-row">'
-                        f'<span class="tm-itin-slot">{slot.capitalize()}</span>'
-                        f'<span class="tm-itin-free">libero</span></div>'
-                    )
-                    continue
-                if item.get("continued"):
-                    rows_html += (
-                        f'<div class="tm-itin-row">'
-                        f'<span class="tm-itin-slot">{slot.capitalize()}</span>'
-                        f'<span class="tm-itin-free">↑ prosegue l\'attività della mattina</span></div>'
-                    )
-                    continue
-                star = ' <span class="tm-itin-star">★</span>' if item["anchor"] else ""
-                half = ' <span class="tm-itin-tag">mezza giornata</span>' if item["half_day"] else ""
+
+# --- Blocchi condivisi tra l'itinerario di una meta e quello di un viaggio
+# combinato: cambia cosa c'è dentro il piano, non come si legge.
+
+def _render_itinerary_head(plan: dict) -> None:
+    variant = plan.get("variant")
+    if variant:
+        st.markdown(f"**{variant['title']}**")
+        st.markdown(
+            f'<p class="tm-itin-forwho">{variant["for_who"]}</p>',
+            unsafe_allow_html=True,
+        )
+    st.caption(plan["style_note"])
+
+
+def _render_sleep_bases(plan: dict) -> bool:
+    """Dove si dorme, notte per notte. `False` se il piano non ha basi reali,
+    così chi chiama può ricadere sulle zone generiche."""
+    if not plan.get("bases"):
+        return False
+    st.markdown('<p class="tm-section-title">Dove si dorme</p>', unsafe_allow_html=True)
+    if plan.get("gateway"):
+        st.caption(f"Si atterra a {plan['gateway']} e si prosegue da lì.")
+    st.markdown(" → ".join(
+        f"**{b['base']}** ({b['nights']} nott{'e' if b['nights'] == 1 else 'i'})"
+        for b in plan["bases"]
+    ))
+    return True
+
+
+def _render_itinerary_excluded(plan: dict) -> None:
+    for excluded in plan.get("excluded", []):
+        st.info(f"**{excluded['name']}** non è in programma: {excluded.get('note', '')}")
+
+
+def _render_itinerary_body(plan: dict) -> None:
+    header = f"{plan['n_days']} giorni · max {plan['day_budget_hours']:.0f}h di attività al giorno"
+    if plan["daylight_is_binding"]:
+        header += f" · solo {plan['daylight_hours']:.0f}h di luce in questo periodo"
+    st.markdown(f'<p class="tm-section-title">{header}</p>', unsafe_allow_html=True)
+
+    _render_itinerary_days(plan)
+
+    st.caption(
+        "★ = tappa imperdibile della meta."
+        if plan.get("curated")
+        else "★ = esperienza WOW curata per questa meta."
+    )
+
+
+def render_trip_itinerary(trip: pd.Series, rank: int | None, surprise: bool) -> None:
+    """Itinerario giorno per giorno di un viaggio combinato: ogni tappa è una
+    base, e i luoghi sono quelli curati delle singole mete. Non compare se
+    anche una sola tappa non ha contenuto curato — meglio la sola timeline
+    che un itinerario metà con nomi propri e metà generico."""
+    dest_df = _prepared_df()
+    variants = trip_itinerary_variants(trip, dest_df)
+    if not variants:
+        return
+
+    prefs = current_prefs()
+    months = requested_months(prefs)
+    trip_id = trip["trip_id"]
+
+    with st.expander("🗺️ Itinerario giorno per giorno"):
+        chosen_days = st.radio(
+            "Durata",
+            [v["days"] for v in variants],
+            format_func=lambda d: f"{d} giorni",
+            horizontal=True,
+            key=f"titin_days_{trip_id}_{rank}_{surprise}",
+            label_visibility="collapsed",
+        )
+        style = st.radio(
+            "Stile",
+            list(STYLE_PROFILES.keys()),
+            format_func=lambda k: STYLE_PROFILES[k]["label"],
+            horizontal=True,
+            key=f"titin_style_{trip_id}_{rank}_{surprise}",
+            label_visibility="collapsed",
+        )
+
+        plan = build_trip_itinerary(trip, dest_df, style=style, days=chosen_days, months=months)
+        if plan is None:
+            return
+
+        _render_itinerary_head(plan)
+        _render_sleep_bases(plan)
+        _render_itinerary_excluded(plan)
+        _render_itinerary_body(plan)
+
+
+def _render_itinerary_days(plan: dict) -> None:
+    """Le giornate. Stessa resa per il motore generico e per quello curato:
+    cambia il contenuto delle righe (nome proprio + modalità, o blocco
+    generico), non il modo di leggerle."""
+    for day in plan["days"]:
+        rows_html = ""
+        for slot in (SLOT_MORNING, SLOT_AFTERNOON, SLOT_EVENING):
+            item = day["slots"].get(slot)
+            if item is None:
                 rows_html += (
                     f'<div class="tm-itin-row">'
                     f'<span class="tm-itin-slot">{slot.capitalize()}</span>'
-                    f'<span class="tm-itin-text">{item["text"]}{star}{half} '
-                    f'<span class="tm-itin-hours">~{item["hours"]:g}h</span></span></div>'
+                    f'<span class="tm-itin-free">libero</span></div>'
                 )
-            st.markdown(
-                f'<div class="tm-itin-day">'
-                f'<div class="tm-itin-daytitle">Giorno {day["day"]}</div>{rows_html}</div>',
-                unsafe_allow_html=True,
+                continue
+            if item.get("continued"):
+                rows_html += (
+                    f'<div class="tm-itin-row">'
+                    f'<span class="tm-itin-slot">{slot.capitalize()}</span>'
+                    f'<span class="tm-itin-free">↑ prosegue l\'attività della mattina</span></div>'
+                )
+                continue
+            star = ' <span class="tm-itin-star">★</span>' if item["anchor"] else ""
+            half = ' <span class="tm-itin-tag">mezza giornata</span>' if item["half_day"] else ""
+            how = (
+                f'<span class="tm-itin-how">{item["how"]}</span>'
+                if item.get("how") else ""
+            )
+            rows_html += (
+                f'<div class="tm-itin-row">'
+                f'<span class="tm-itin-slot">{slot.capitalize()}</span>'
+                f'<span class="tm-itin-text">{item["text"]}{star}{half} '
+                f'<span class="tm-itin-hours">~{item["hours"]:g}h</span>{how}</span></div>'
             )
 
-        st.caption("★ = esperienza WOW curata per questa meta.")
+        title = f'Giorno {day["day"]}'
+        if day.get("title"):
+            title += f' · {day["title"]}'
+
+        # La riga della base compare solo negli itinerari curati: è l'unico
+        # caso in cui sappiamo davvero dove si dorme.
+        move_html = ""
+        if day.get("sleep_base"):
+            bits = [f'Notte a {day["sleep_base"]}']
+            if day.get("moved_from"):
+                bits.append(f'da {day["moved_from"]}')
+            move_html = f'<div class="tm-itin-move">{" · ".join(bits)}</div>'
+
         st.markdown(
-            f'<p class="tm-itin-why">{itinerary_rationale(row, plan)}</p>',
+            f'<div class="tm-itin-day">'
+            f'<div class="tm-itin-daytitle">{title}</div>{move_html}{rows_html}</div>',
             unsafe_allow_html=True,
         )
 
@@ -1654,7 +1809,7 @@ def render_takeaways(row: pd.Series) -> None:
     takeaways = emotional_takeaways(row)
     if not takeaways:
         return
-    st.markdown('<p class="tm-section-title">💭 Cosa ti porti a casa</p>', unsafe_allow_html=True)
+    st.markdown('<p class="tm-section-title">Cosa ti porti a casa</p>', unsafe_allow_html=True)
     st.markdown(
         "".join(f'<div class="tm-takeaway">{t}</div>' for t in takeaways),
         unsafe_allow_html=True,
@@ -1672,7 +1827,7 @@ def render_dna_comparison(row: pd.Series) -> None:
     if not visible:
         return
 
-    st.markdown('<p class="tm-section-title">🧬 Tu vs questa meta</p>', unsafe_allow_html=True)
+    st.markdown('<p class="tm-section-title">Tu vs questa meta</p>', unsafe_allow_html=True)
 
     # Legenda con campioni veri dei due colori usati nelle barre: dire
     # "barra scura / barra chiara" a parole costringeva il lettore a
@@ -1777,7 +1932,7 @@ def render_travel_style_radar(series: list[tuple[str, dict[str, float]]]) -> Non
 
 
 def render_travel_style_bars(scores: dict[str, float]) -> None:
-    st.markdown('<p class="tm-section-title">🎨 Travel Style</p>', unsafe_allow_html=True)
+    st.markdown('<p class="tm-section-title">Travel Style</p>', unsafe_allow_html=True)
     rows = "".join(
         f'<div class="tm-style-row">'
         f'<span class="tm-style-label">{label}</span>'
@@ -1792,7 +1947,7 @@ def render_travel_style_bars(scores: dict[str, float]) -> None:
 def render_contextual_warnings(warnings: list[str]) -> None:
     if not warnings:
         return
-    st.markdown('<p class="tm-section-title">🔎 Da sapere prima di partire</p>', unsafe_allow_html=True)
+    st.markdown('<p class="tm-section-title">Da sapere prima di partire</p>', unsafe_allow_html=True)
     lines = "".join(f'<div class="tm-warning-line">{w}</div>' for w in warnings)
     st.markdown(lines, unsafe_allow_html=True)
 
@@ -1861,12 +2016,12 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
 
     stay_hint = TRAVELLER_STAY_HINTS.get(prefs.get("traveller_mode") or "")
     if stay_hint:
-        st.markdown('<p class="tm-section-title">🛏️ Dove dormire, per come viaggi</p>', unsafe_allow_html=True)
+        st.markdown('<p class="tm-section-title">Dove dormire, per come viaggi</p>', unsafe_allow_html=True)
         st.caption(stay_hint)
 
     cost_col, info_col = st.columns([1.3, 1])
     with cost_col:
-        st.markdown('<p class="tm-section-title">💰 Costo indicativo / persona</p>', unsafe_allow_html=True)
+        st.markdown('<p class="tm-section-title">Costo indicativo / persona</p>', unsafe_allow_html=True)
         st.markdown(f"**Da {format_price(row['total_cost_min'])}**")
         st.caption(f"Range indicativo: {format_price_range(row['total_cost_min'], row['total_cost_max'])}")
     with info_col:
@@ -1889,7 +2044,7 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
 
         alt_transports = estimate_alternative_transports(row)
         if alt_transports:
-            st.markdown('<p class="tm-section-title">🚆 Alternative al volo</p>', unsafe_allow_html=True)
+            st.markdown('<p class="tm-section-title">Alternative al volo</p>', unsafe_allow_html=True)
             st.caption("Stima indicativa basata sulla distanza, non su orari reali.")
             for opt in alt_transports:
                 st.markdown(
@@ -1956,6 +2111,7 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
             )
         else:
             st.caption("Immagine non disponibile su questo computer: usa la didascalia qui sopra.")
+
 
     action_cols = st.columns([1, 1, 2])
     with action_cols[0]:
@@ -2053,7 +2209,7 @@ def _render_trip_detail_body(trip: pd.Series, rank: int | None, surprise: bool) 
 
     cost_col, info_col = st.columns([1.3, 1])
     with cost_col:
-        st.markdown('<p class="tm-section-title">💰 Costo totale indicativo / persona</p>', unsafe_allow_html=True)
+        st.markdown('<p class="tm-section-title">Costo totale indicativo / persona</p>', unsafe_allow_html=True)
         st.markdown(f"**Da {format_price(trip['total_cost_min'])}**")
         st.caption(f"Range indicativo: {format_price_range(trip['total_cost_min'], trip['total_cost_max'])}")
     with info_col:
@@ -2072,6 +2228,8 @@ def _render_trip_detail_body(trip: pd.Series, rank: int | None, surprise: bool) 
 
     with st.expander("🗓️ Timeline del viaggio"):
         render_visual_timeline(trip)
+
+    render_trip_itinerary(trip, rank, surprise)
 
     with st.expander("🎒 Checklist di viaggio"):
         checklist = build_trip_checklist(
@@ -2439,32 +2597,32 @@ def render_results() -> None:
         trip_bundle = st.session_state["trip_bundle"]
     trip_results = trip_bundle["results"] if trip_bundle is not None else pd.DataFrame()
 
-    # Barra controlli su una riga sola: i due toggle + Sorprendimi occupavano
-    # tre blocchi verticali con altrettante etichette, spingendo i risultati
-    # sotto la piega senza aggiungere informazione.
-    ctrl_view, ctrl_display, ctrl_surprise = st.columns([2.2, 1.8, 1])
+    # Barra controlli su una riga sola. `segmented_control` e non `radio`:
+    # con tre etichette lunghe il radio orizzontale andava a capo e le due
+    # file di opzioni finivano disallineate tra loro.
+    ctrl_view, ctrl_display, ctrl_surprise = st.columns([2.5, 1.7, 1.1])
     with ctrl_view:
-        view_mode = st.radio(
+        view_mode = st.segmented_control(
             "Modalità risultati",
-            ["🌍 Solo destinazioni", "✈️ Solo viaggi combinati", "🔀 Entrambi"],
-            index=2, horizontal=True, key="results_view_mode", label_visibility="collapsed",
-        )
+            ["Destinazioni", "Combinati", "Entrambi"],
+            default="Entrambi", key="results_view_mode", label_visibility="collapsed",
+        ) or "Entrambi"
     with ctrl_display:
-        display_mode = st.radio(
+        display_mode = st.segmented_control(
             "Vista risultati",
-            ["📋 Vista compatta", "📖 Vista dettagliata"],
-            index=0, horizontal=True, key="destination_display_mode", label_visibility="collapsed",
-        )
+            ["Compatta", "Dettagliata"],
+            default="Compatta", key="destination_display_mode", label_visibility="collapsed",
+        ) or "Compatta"
     with ctrl_surprise:
         surprise_clicked = st.button("🎲 Sorprendimi", use_container_width=True, type="secondary")
 
-    show_destinations = view_mode != "✈️ Solo viaggi combinati"
-    show_trips = view_mode != "🌍 Solo destinazioni"
-    compact = display_mode == "📋 Vista compatta"
+    show_destinations = view_mode != "Combinati"
+    show_trips = view_mode != "Destinazioni"
+    compact = display_mode == "Compatta"
 
     departure_city = st.session_state["prefs"].get("departure_city")
     if departure_city:
-        st.caption(f"✈️ Stime di volo per partenze da {DEPARTURE_CITY_OPTIONS[departure_city].split(' ', 1)[-1]}.")
+        st.caption(f"Stime di volo per partenze da {DEPARTURE_CITY_OPTIONS[departure_city].split(' ', 1)[-1]}.")
 
     if surprise_clicked:
         handle_surprise(results, trip_results, scored_all, trip_bundle, show_destinations, show_trips)
@@ -2857,8 +3015,7 @@ def render_sidebar() -> None:
 
 def main() -> None:
     init_state()
-    period = (st.session_state.get("prefs") or {}).get("period") if st.session_state.get("prefs") else None
-    inject_css(christmas_mode=period in CHRISTMAS_LIKE)
+    inject_css()
     render_sidebar()
 
     stage = st.session_state["stage"]

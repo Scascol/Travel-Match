@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import places as places_mod
+
 # ---------------------------------------------------------------------------
 # Ore di luce — vincolo forte del "quanto ci sta in una giornata".
 #
@@ -154,7 +156,13 @@ def mobility_profile(row: Any) -> dict[str, Any]:
     punteggi), con una manciata di override espliciti per i casi in cui la
     regola sbaglierebbe. Stesso approccio dei profili stagionali in
     destinations.py: regola + eccezioni dichiarate, non 79 valori a mano."""
-    override = MOBILITY_OVERRIDES.get(int(row["id"]))
+    # Gli override sono per id di destinazione. Un viaggio combinato ha un id
+    # testuale ("firenze_cinqueterre") e nessun override: gli si applica la
+    # regola generale, che e' quella giusta per una sequenza di tappe.
+    try:
+        override = MOBILITY_OVERRIDES.get(int(row["id"]))
+    except (TypeError, ValueError):
+        override = None
     if override:
         return {"kind": override, **MOBILITY_INFO[override]}
 
@@ -291,6 +299,19 @@ _FILLER_BY_TAG: dict[str, list[tuple[str, float, str | None, bool]]] = {
     "surf": [("Sessione in acqua quando le onde sono buone", 3.5, None, True)],
 }
 
+# Tag che esistono solo in una parte dell'anno. Senza questo filtro, una meta
+# artica a luglio riceveva come riempimento generico "uscita a caccia di
+# aurora" e "attivita' sulla neve": due cose impossibili nel mese scelto, per
+# giunta subito dopo aver escluso le stesse attivita' dal contenuto curato.
+_FILLER_TAG_MONTHS: dict[str, set[int]] = {
+    "aurora boreale": {9, 10, 11, 12, 1, 2, 3},
+    "neve": {12, 1, 2, 3, 4},
+    "sci": {12, 1, 2, 3, 4},
+    "mercatini di natale": {11, 12, 1},
+    "citta illuminate": {10, 11, 12, 1, 2},
+}
+
+
 _UNIVERSAL_FILLER: list[tuple[str, float, str | None, bool]] = [
     ("Giro senza meta per orientarsi", 2.0, SLOT_MORNING, False),
     ("Pomeriggio libero, al ritmo che preferisci", 2.5, SLOT_AFTERNOON, True),
@@ -363,7 +384,9 @@ def standard_itinerary_days(row: Any, preferred: int | None = None) -> int:
     return max(days_min, min(base, days_max))
 
 
-def _activity_pool(row: Any, style: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _activity_pool(
+    row: Any, style: str, months: list[int] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Due liste separate, perche' seguono regole diverse.
 
     Le ANCORE (`wow_experiences`) sono contenuto curato e unico: si usano una
@@ -382,8 +405,16 @@ def _activity_pool(row: Any, style: str) -> tuple[list[dict[str, Any]], list[dic
     # ottiene davvero piu' cibo e "relax" piu' spiaggia/wellness.
     tags.sort(key=lambda t: 0 if t in profile["prefer_tags"] else 1)
 
+    def tag_in_season(tag: str) -> bool:
+        window = _FILLER_TAG_MONTHS.get(tag)
+        if not window or not months:
+            return True
+        return any(m in window for m in months)
+
     fillers = []
     for tag in tags:
+        if not tag_in_season(tag):
+            continue
         for text, hours, slot, repeatable in _FILLER_BY_TAG.get(tag, []):
             fillers.append({"text": text, "hours": hours, "slot": slot,
                             "anchor": False, "repeatable": repeatable})
@@ -451,7 +482,7 @@ def build_standard_itinerary(
     daylight_is_binding = light - profile["pause_hours"] < profile["max_day_hours"]
     day_budget = min(profile["max_day_hours"], max(4.5, light - profile["pause_hours"]))
 
-    anchors, fillers = _activity_pool(row, style)
+    anchors, fillers = _activity_pool(row, style, months)
     usage: dict[str, int] = {}
     days_out: list[dict[str, Any]] = []
     anchor_queue = list(anchors)
@@ -536,6 +567,416 @@ def build_standard_itinerary(
         "transfer_hours": transfer,
         "mobility": mob,
     }
+
+
+# ---------------------------------------------------------------------------
+# Itinerari curati — mete con luoghi reali in places.py
+#
+# Stessi vincoli del motore generico (ore di luce, tetto dello stile, slot),
+# ma le attivita' hanno un nome proprio e una modalita'. In piu' compare la
+# BASE: dove si dorme ogni notte. E' il pezzo che il motore generico non puo'
+# avere, perche' richiede di sapere dove stanno le cose — a Creta, Cnosso e
+# Samaria sono a tre ore d'auto, e un itinerario che le mette in giornate
+# consecutive senza spostare la base e' sbagliato anche se "sta" nel budget.
+#
+# Le ore di ogni luogo includono gia' il tempo per raggiungerlo dalla sua
+# base: e' per questo che Elafonissi vale 6 ore e non 4.
+# ---------------------------------------------------------------------------
+
+def _allocate_nights(bases: list[dict[str, Any]], n_days: int) -> list[str]:
+    """Quante notti per base, e in che ordine. Le basi con `night_weight` 0
+    sono porte d'ingresso (ci si atterra, non ci si dorme).
+
+    `max_nights` evita il caso in cui il peso proporzionale darebbe due notti
+    a una tappa che ne merita una: a Rethymno si dorme una volta sola, il
+    resto delle notti va dove ci sono le cose da fare."""
+    hosts = [b for b in bases if b.get("night_weight", 0) > 0]
+    if not hosts or n_days <= 0:
+        return []
+
+    total_w = sum(b["night_weight"] for b in hosts)
+    alloc = {
+        b["key"]: max(1, min(int(round(b["night_weight"] / total_w * n_days)),
+                             b.get("max_nights", n_days)))
+        for b in hosts
+    }
+
+    # Aggiustamento dell'arrotondamento, in entrambe le direzioni.
+    for _ in range(100):
+        current = sum(alloc.values())
+        if current == n_days:
+            break
+        if current < n_days:
+            pool = [b for b in hosts
+                    if b["key"] in alloc and alloc[b["key"]] < b.get("max_nights", n_days)]
+            if not pool:
+                break
+            alloc[max(pool, key=lambda b: b["night_weight"])["key"]] += 1
+        else:
+            pool = [b for b in hosts if b["key"] in alloc and alloc[b["key"]] > 1]
+            if pool:
+                alloc[min(pool, key=lambda b: b["night_weight"])["key"]] -= 1
+            else:
+                # Tutte a una notte e sono ancora troppe: il viaggio e' corto,
+                # si rinuncia alle tappe meno importanti invece di correre.
+                droppable = [b for b in hosts if b["key"] in alloc]
+                if len(droppable) <= 1:
+                    break
+                del alloc[min(droppable, key=lambda b: b["night_weight"])["key"]]
+
+    seq: list[str] = []
+    for base in bases:  # ordine curato = ordine geografico del percorso
+        seq.extend([base["key"]] * alloc.get(base["key"], 0))
+    return seq
+
+
+def _place_fits_slot(place: dict[str, Any], slot: str) -> bool:
+    """Come per i filler: `slot is None` vuol dire "di giorno", mai di sera."""
+    if slot == SLOT_EVENING:
+        return place.get("slot") == SLOT_EVENING
+    return place.get("slot") in (slot, None)
+
+
+def _pick_place(
+    pools: dict[str, list[dict[str, Any]]], sources: list[str], slot: str, max_hours: float,
+    only_must: bool = False,
+) -> dict[str, Any] | None:
+    """Il luogo migliore tra le basi consultabili oggi.
+
+    I `must` vincono sempre sugli `extra`, anche quando stanno in una base
+    piu' avanti nel percorso: in un giorno di trasferimento e' giusto lasciare
+    la Fortezza di Rethymno per andare a Balos, non il contrario. A parita' di
+    tier vince la base che si sta lasciando — e' l'ultima occasione di vederla."""
+    best: tuple[tuple[int, int], dict[str, Any]] | None = None
+    for rank, key in enumerate(sources):
+        for place in pools.get(key, []):
+            is_must = place.get("tier") == places_mod.MUST
+            if only_must and not is_must:
+                continue
+            if place["hours"] > max_hours or not _place_fits_slot(place, slot):
+                continue
+            score = (0 if is_must else 1, rank)
+            if best is None or score < best[0]:
+                best = (score, place)
+    return best[1] if best else None
+
+
+def build_curated_itinerary(
+    row: Any,
+    style: str = STYLE_STANDARD,
+    days: int | None = None,
+    months: list[int] | None = None,
+    entry: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Itinerario con luoghi reali. `None` se la meta non ha contenuto curato:
+    chi chiama deve ricadere su `build_standard_itinerary`.
+
+    `entry` permette di passare basi e luoghi gia' pronti invece di prenderli
+    da places.py: e' cosi' che i viaggi combinati riusano questo motore,
+    trattando ogni tappa come una base (vedi `build_trip_itinerary`)."""
+    if entry is None:
+        entry = places_mod.curated_entry(row.get("id"))
+    if not entry:
+        return None
+
+    style = style if style in STYLE_PROFILES else STYLE_STANDARD
+    profile = STYLE_PROFILES[style]
+
+    variants = entry.get("variants", [])
+    if days is None:
+        variant = variants[0] if variants else None
+        n_days = variant["days"] if variant else standard_itinerary_days(row)
+    else:
+        n_days = days
+        variant = next((v for v in variants if v["days"] == days), None)
+
+    light = daylight_hours(row.get("country", ""), months)
+    daylight_is_binding = light - profile["pause_hours"] < profile["max_day_hours"]
+    day_budget = min(profile["max_day_hours"], max(4.5, light - profile["pause_hours"]))
+
+    bases = entry["bases"]
+    by_key = {b["key"]: b for b in bases}
+    seq = _allocate_nights(bases, n_days)
+    if not seq:
+        return None
+    gateway = next((b for b in bases if b.get("night_weight", 0) == 0), None)
+
+    # Un luogo si usa una volta sola: hanno un nome proprio, ripeterli sarebbe
+    # assurdo. Ordine: prima i `must`, poi gli `extra`, entrambi nell'ordine
+    # curato (sort stabile).
+    pools: dict[str, list[dict[str, Any]]] = {}
+    for place in places_mod.in_season(entry["places"], months):
+        pools.setdefault(place["base"], []).append(place)
+    for key in pools:
+        pools[key].sort(key=lambda p: 0 if p.get("tier") == places_mod.MUST else 1)
+
+    # Rete di sicurezza: finiti i luoghi curati, meglio un blocco generico
+    # onesto che una giornata vuota.
+    _, fillers = _activity_pool(row, style, months)
+    filler_usage: dict[str, int] = {}
+
+    days_out: list[dict[str, Any]] = []
+    prev_key = gateway["key"] if gateway else seq[0]
+
+    for day_index, base_key in enumerate(seq):
+        base = by_key[base_key]
+        moved = base_key != prev_key
+        slots: dict[str, dict[str, Any] | None] = {
+            SLOT_MORNING: None, SLOT_AFTERNOON: None, SLOT_EVENING: None,
+        }
+        spent = base.get("transfer_h", 0.0) if moved else 0.0
+        labels: list[tuple[bool, str]] = []
+
+        def take(place: dict[str, Any], slot: str) -> None:
+            nonlocal spent
+            spans = slot != SLOT_EVENING and place["hours"] >= 4.0
+            item = {
+                "text": place["name"],
+                "how": place.get("how"),
+                "note": place.get("note"),
+                "hours": place["hours"],
+                "anchor": place.get("tier") == places_mod.MUST,
+                "half_day": spans,
+                "curated": True,
+                "base": by_key[place["base"]]["name"],
+            }
+            if spans:
+                slots[SLOT_MORNING] = item
+                slots[SLOT_AFTERNOON] = {**item, "continued": True}
+            else:
+                slots[slot] = item
+            pools[place["base"]].remove(place)
+            if slot != SLOT_EVENING:
+                spent += place["hours"]
+            labels.append((item["anchor"], place.get("label") or place["name"]))
+
+        def take_filler(slot: str, max_hours: float) -> None:
+            nonlocal spent
+            filler = _pick_filler(fillers, slot, max_hours, filler_usage)
+            if not filler:
+                return
+            slots[slot] = {
+                "text": filler["text"], "how": None, "note": None,
+                "hours": filler["hours"], "anchor": False,
+                "half_day": False, "curated": False, "base": base["name"],
+            }
+            filler_usage[filler["text"]] = filler_usage.get(filler["text"], 0) + 1
+            if slot != SLOT_EVENING:
+                spent += filler["hours"]
+
+        # Di giorno si puo' ancora attingere alla base che si lascia; la sera
+        # si e' gia' arrivati, quindi solo alla base dove si dorme.
+        day_sources = [prev_key, base_key] if moved else [base_key]
+
+        # 1. Mattina — qui finisce il pezzo forte della giornata.
+        #
+        # I `must` si piazzano anche se sfondano il tetto orario, come le
+        # ancore del motore generico: sono le cose per cui si viene qui. In
+        # stile relax il tetto e' 5.5h ed Elafonissi ne vale 6 — rispettare il
+        # tetto significherebbe proporre Creta senza la spiaggia rosa, che non
+        # e' un ritmo piu' lento, e' un'altra vacanza.
+        pick = _pick_place(pools, day_sources, SLOT_MORNING, float("inf"), only_must=True)
+        if pick is None:
+            pick = _pick_place(pools, day_sources, SLOT_MORNING, day_budget - spent)
+        if pick:
+            take(pick, SLOT_MORNING)
+        elif day_budget - spent >= 1.5:
+            take_filler(SLOT_MORNING, day_budget - spent)
+
+        # 2. Pomeriggio, se la mattina non ha gia' occupato mezza giornata.
+        if slots[SLOT_AFTERNOON] is None:
+            used_main = sum(1 for s in (SLOT_MORNING, SLOT_AFTERNOON) if slots[s] is not None)
+            remaining = day_budget - spent
+            if used_main < profile["max_activities"] and remaining >= 1.5:
+                cap = min(remaining, 3.9)
+                pick = _pick_place(pools, day_sources, SLOT_AFTERNOON, cap)
+                if pick:
+                    take(pick, SLOT_AFTERNOON)
+                else:
+                    take_filler(SLOT_AFTERNOON, cap)
+
+        # 3. Sera — non consuma ore di luce.
+        if slots[SLOT_EVENING] is None:
+            pick = _pick_place(pools, [base_key], SLOT_EVENING, 99.0)
+            if pick:
+                take(pick, SLOT_EVENING)
+            else:
+                take_filler(SLOT_EVENING, 99.0)
+
+        # Titolo della giornata: i luoghi che la definiscono. I `must` per
+        # primi; se la giornata non ne ha, valgono gli altri.
+        named = [text for is_must, text in labels if is_must] or [t for _, t in labels]
+        seen: list[str] = []
+        for text in named:
+            if text not in seen:
+                seen.append(text)
+        title = " & ".join(seen[:2]) if seen else base["name"]
+
+        n_main = sum(
+            1 for s in (SLOT_MORNING, SLOT_AFTERNOON)
+            if slots[s] is not None and not slots[s].get("continued")
+        )
+        days_out.append({
+            "day": day_index + 1,
+            "title": title,
+            "slots": slots,
+            "sleep_base": base["name"],
+            "moved_from": by_key[prev_key]["name"] if moved else None,
+            "active_hours": round(spent, 1),
+            "n_activities": n_main,
+        })
+        prev_key = base_key
+
+    nights = [
+        {"base": by_key[k]["name"], "nights": seq.count(k)}
+        for k in dict.fromkeys(seq)
+    ]
+
+    # Su una meta a base unica "Notte a Roma centro" ripetuto per cinque
+    # giorni non e' informazione, e' rumore: la base si dice una volta sola
+    # nel riepilogo. La riga per giornata serve solo quando ci si sposta.
+    if len(nights) < 2:
+        for day in days_out:
+            day["sleep_base"] = None
+            day["moved_from"] = None
+
+    return {
+        "days": days_out,
+        "n_days": n_days,
+        "curated": True,
+        "variant": variant,
+        "bases": nights,
+        "gateway": gateway["name"] if gateway else None,
+        "excluded": places_mod.out_of_season(entry["places"], months),
+        "style": style,
+        "style_label": profile["label"],
+        "style_note": profile["note"],
+        "daylight_hours": round(light, 1),
+        "day_budget_hours": round(day_budget, 1),
+        "daylight_is_binding": daylight_is_binding,
+        "transfer_hours": mobility_profile(row)["transfer_h"],
+        "mobility": mobility_profile(row),
+    }
+
+
+def curated_variants(row: Any) -> list[dict[str, Any]]:
+    """Le durate disponibili per la meta, vuote se non e' curata."""
+    entry = places_mod.curated_entry(row.get("id"))
+    return list(entry.get("variants", [])) if entry else []
+
+
+# ---------------------------------------------------------------------------
+# Itinerari dei viaggi combinati
+#
+# Un viaggio combinato e' gia' una sequenza di tappe con dei trasferimenti in
+# mezzo: e' esattamente la struttura che il motore curato usa per le basi. Qui
+# le tappe diventano basi, i luoghi curati di ogni meta finiscono nel pool di
+# quella tappa, e i tempi di trasferimento arrivano dagli archi calcolati dal
+# Trip Builder invece che da una stima.
+# ---------------------------------------------------------------------------
+
+def trip_curated_entry(trip: Any, dest_df: Any) -> dict[str, Any] | None:
+    """Costruisce basi e luoghi di un viaggio combinato dalle sue tappe.
+
+    `None` se anche una sola tappa non ha contenuto curato: un itinerario in
+    cui la seconda meta e' fatta di blocchi generici sarebbe peggio che non
+    proporlo affatto."""
+    stop_ids = list(trip.get("stop_ids") or [])
+    stop_names = list(trip.get("stop_names") or [])
+    if len(stop_ids) < 2:
+        return None
+
+    edges = list(trip.get("edges") or [])
+    bases: list[dict[str, Any]] = []
+    places: list[dict[str, Any]] = []
+
+    for index, dest_id in enumerate(stop_ids):
+        entry = places_mod.curated_entry(dest_id)
+        if not entry:
+            return None
+
+        match = dest_df[dest_df["id"] == dest_id]
+        if match.empty:
+            return None
+        dest = match.iloc[0]
+
+        key = f"stop{index}"
+        bases.append({
+            "key": key,
+            "name": stop_names[index] if index < len(stop_names) else str(dest["name"]),
+            # Il peso e' la durata minima consigliata della meta: e' il dato che
+            # dice quanto quella tappa "merita" del viaggio, e evita di dare tre
+            # notti a una citta' che si vede in due.
+            "night_weight": max(1, int(dest["days_min"])),
+            "max_nights": max(1, int(dest["days_max"])),
+            # Il tempo di trasferimento e' quello reale calcolato dal Trip
+            # Builder per l'arco che porta a questa tappa.
+            "transfer_h": float(edges[index - 1]["travel_time"]) if index and index <= len(edges) else 0.0,
+            "note": None,
+        })
+
+        # Dentro una tappa non si cambia base: le basi interne della meta
+        # (per Creta sarebbero Rethymno e Chania) collassano in una sola.
+        for place in entry["places"]:
+            places.append({**place, "base": key})
+
+    minimum = int(trip.get("minimum_days") or len(stop_ids) * 2)
+    ideal = int(trip.get("ideal_days") or minimum + 2)
+    variants = [{
+        "days": minimum,
+        "title": "Il minimo per farlo bene",
+        "for_who": "Ogni tappa vista senza correre, saltando quello che si può saltare.",
+    }]
+    if ideal > minimum:
+        variants.append({
+            "days": ideal,
+            "title": "Durata ideale",
+            "for_who": "Il tempo per cui questo itinerario è pensato, senza giornate di solo trasferimento.",
+        })
+
+    return {"bases": bases, "places": places, "variants": variants}
+
+
+def build_trip_itinerary(
+    trip: Any,
+    dest_df: Any,
+    style: str = STYLE_STANDARD,
+    days: int | None = None,
+    months: list[int] | None = None,
+) -> dict[str, Any] | None:
+    """Itinerario giorno per giorno di un viaggio combinato."""
+    entry = trip_curated_entry(trip, dest_df)
+    if not entry:
+        return None
+
+    stop_ids = list(trip["stop_ids"])
+    first = dest_df[dest_df["id"] == stop_ids[0]].iloc[0]
+    # Un `row` sintetico: serve al motore per le ore di luce (latitudine della
+    # prima tappa) e per i blocchi generici di riempimento, che qui pescano
+    # dai tag di tutte le tappe messe insieme.
+    tags: list[str] = []
+    for dest_id in stop_ids:
+        for tag in dest_df[dest_df["id"] == dest_id].iloc[0]["tags"]:
+            if tag not in tags:
+                tags.append(tag)
+
+    row = {
+        "id": trip.get("trip_id"),
+        "name": trip.get("name"),
+        "country": first["country"],
+        "tags": tags,
+        "days_min": int(trip.get("minimum_days") or 4),
+        "days_max": int(trip.get("ideal_days") or 8),
+        "relax_score": 50,
+        "flight_hours": float(first["flight_hours"]),
+        "wow_experiences": [],
+    }
+    return build_curated_itinerary(row, style=style, days=days, months=months, entry=entry)
+
+
+def trip_itinerary_variants(trip: Any, dest_df: Any) -> list[dict[str, Any]]:
+    entry = trip_curated_entry(trip, dest_df)
+    return list(entry["variants"]) if entry else []
 
 
 # ---------------------------------------------------------------------------

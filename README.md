@@ -15,6 +15,10 @@ Oltre alle **singole destinazioni**, TravelMatch è anche un **Trip Builder**:
 propone itinerari di 2-3 tappe (es. "Istanbul & Cappadocia") solo quando sono
 davvero fattibili, mai solo perché il punteggio è alto (§6).
 
+Ogni meta e ogni viaggio combinato hanno un **itinerario giorno per giorno con
+luoghi reali** — 911 luoghi curati con base logistica, modalità di visita e
+stagionalità, non nomi generati (§8).
+
 ---
 
 ## Indice
@@ -26,7 +30,7 @@ davvero fattibili, mai solo perché il punteggio è alto (§6).
 5. [Costi: scenari, dati statici, stagionalità](#5-costi-scenari-dati-statici-stagionalità)
 6. [Trip Builder — viaggi combinati](#6-trip-builder--viaggi-combinati)
 7. [Dettagli di ogni meta](#7-dettagli-di-ogni-meta)
-8. [Itinerari classici](#8-itinerari-classici)
+8. [Itinerari giorno per giorno](#8-itinerari-giorno-per-giorno)
 9. [Modalità di ricerca](#9-modalità-di-ricerca)
 10. [Confronto e "I miei viaggi"](#10-confronto-e-i-miei-viaggi)
 11. [Export e condivisione](#11-export-e-condivisione)
@@ -38,7 +42,8 @@ davvero fattibili, mai solo perché il punteggio è alto (§6).
 
 ## 1. Installazione e struttura
 
-Requisiti: Python 3.10+.
+Requisiti: Python 3.10+ e **Streamlit ≥ 1.40** (serve `st.segmented_control`,
+usato per i controlli della pagina risultati).
 
 ```bash
 pip install -r requirements.txt
@@ -56,8 +61,9 @@ travelmatch/
 ├── trip_routes.py          # rotte tra destinazioni + trip template curati a mano
 ├── trip_presentation.py    # spiegazioni, timeline ed export testuale dei viaggi combinati
 ├── destinations.py         # dataset locale (79 destinazioni) + ritmo/stagionalità derivati
+├── places.py               # luoghi curati per meta (911 voci): basi, durate, modalità, stagionalità
 ├── insights.py             # Travel Style, DNA vs meta, giorno tipo, avvisi, anti-FOMO, facilità organizzativa
-├── itinerary.py            # itinerari classici giorno per giorno, mobilità, zone, prenotazioni
+├── itinerary.py            # itinerari giorno per giorno (curati e generici), mobilità, zone, prenotazioni
 ├── checklist.py            # checklist di viaggio (cosa portare/lasciare a casa, documenti, consigli)
 ├── utils.py                # costanti del questionario, Travel DNA, formattazione, scenari di costo
 ├── export.py               # export testo/PDF/"stories" di destinazioni e viaggi combinati
@@ -76,6 +82,11 @@ Quattro livelli indipendenti:
   fisso (~35 campi autorati + colonne derivate come `pace_score` e
   `seasonal_profile`, calcolate da `load_destinations_df()`). Aggiungere una
   meta non richiede toccare il motore.
+- **`places.py` — dati, secondo livello.** I luoghi con nome proprio di ogni
+  meta, con base logistica, durata, modalità di visita e stagionalità. È
+  separato da `destinations.py` perché serve solo agli itinerari e perché
+  cresce con una granularità diversa: una meta ha ~35 campi, ma dai 10 ai 20
+  luoghi.
 - **`recommender.py` / `trip_builder.py` — motore.** Puro Python + pandas,
   **zero dipendenze da Streamlit**: testabile in isolamento, riusabile in
   un'API o un altro frontend.
@@ -250,6 +261,10 @@ rilassato/intenso", "Ottimizza il tempo" modificano pesi/penalità interne
 (`apply_trip_refinement`), senza ripetere il questionario. 🎲 Sorprendimi è
 condiviso tra destinazioni e viaggi (scelta pesata verso le destinazioni).
 
+**Itinerario giorno per giorno**: ogni viaggio combinato ha anche il suo
+itinerario con luoghi reali, costruito trattando le tappe come basi — vedi
+[§8](#8-itinerari-giorno-per-giorno).
+
 ---
 
 ## 7. Dettagli di ogni meta
@@ -295,28 +310,62 @@ campo dataset, nessuna fonte esterna:
 
 ---
 
-## 8. Itinerari classici
+## 8. Itinerari giorno per giorno
 
 `itinerary.py` costruisce un itinerario **standard** (non personalizzato sulle
 preferenze) giorno per giorno, in mattina / pomeriggio / sera. Risponde alla
 domanda "cosa ci faccio in N giorni", che viene prima di "è la meta giusta".
 
 **Dove:** expander **"🗺️ Itinerario classico"** nel dettaglio della card
-destinazione, subito dopo la Giornata tipo.
+destinazione, subito dopo la Giornata tipo. Per i viaggi combinati, expander
+**"🗺️ Itinerario giorno per giorno"** nella card del viaggio.
 
-### Cosa è calcolato e cosa è curato
+Ci sono **due motori**, con lo stesso codice di riempimento delle giornate:
 
-Il dataset non contiene attrazioni con orari, zone urbane, prezzi dei
-trasporti o tempi di coda. Inventarli per 79 destinazioni avrebbe significato
-presentare dati fabbricati come informazione di viaggio, quindi:
+| | Motore curato | Motore generico |
+|---|---|---|
+| Attinge da | `places.py` — luoghi con nome proprio | tag della meta |
+| Copertura | tutte e 79 le mete | fallback per mete senza contenuto curato |
+| Esempio di riga | "Laguna di Balos — in barca da Kissamos" | "Cala o tratto di costa raggiungibile in giornata" |
+
+`build_curated_itinerary()` restituisce `None` se la meta non è coperta, e
+`app.py` ricade su `build_standard_itinerary()`. Il generico non è stato
+rimosso: resta la rete di sicurezza quando i luoghi curati di una giornata
+finiscono, e serve subito se si aggiungono destinazioni nuove al dataset.
+
+### Cosa è curato e cosa è calcolato
+
+Il principio non è cambiato: **niente dati di viaggio inventati.** Quello che
+è cambiato è che i luoghi ora ci sono davvero invece di essere aggirati.
 
 | Elemento | Origine |
 |---|---|
-| Ancore delle giornate | `wow_experiences` curate nel dataset (una per giorno, marcate ★) |
-| Riempimento tra le ancore | Blocchi generici derivati dai tag — mai nomi di luoghi inventati |
-| Durate e ritmo | **Calcolati**: ore di luce per latitudine e stagione, durata per categoria di attività, tempo di trasferimento |
-| Cosa prenotare | `practical_tips` curati + tipo di esperienza + stagione |
-| Mobilità e zone | Descritte per **categoria** (a piedi / mezzi / serve l'auto / resort / tour), non con linee, prezzi o toponimi |
+| Luoghi delle giornate | `places.py` — nome proprio, base, durata, slot, tier (★ = imperdibile) |
+| Modalità di visita | Curata (`how`): "in barca da Kissamos", "306 gradini fiancheggiati dai naga", "prenotazione obbligatoria a orario" |
+| Base logistica | Curata: dove si dorme ogni notte, e quando ci si sposta |
+| Stagionalità | Curata (`months` + `note`), solo dove è **strutturale**: una gola chiusa d'inverno, i traghetti fermi, il sole di mezzanotte. Mai orari o prezzi, che invecchiano |
+| Riempimento residuo | Blocchi generici derivati dai tag, filtrati per stagione |
+| Durate e ritmo | **Calcolati**: ore di luce per latitudine e stagione, tetto dello stile, tempi di trasferimento |
+| Mobilità e zone | Descritte per **categoria** (a piedi / mezzi / serve l'auto / resort / tour) |
+
+Il dataset curato oggi: **911 luoghi su 79 mete** (da 10 a 20 per meta), 102
+basi logistiche, 228 attività serali, 93 luoghi con un vincolo stagionale.
+
+### Basi: dove si dorme
+
+È il pezzo che il motore generico non può avere, perché richiede di sapere
+*dove stanno* le cose. A Creta, Cnosso e Samaria sono a tre ore d'auto: un
+itinerario che le mette in giornate consecutive senza spostare la base è
+sbagliato anche se "sta" nel budget orario. Quindi:
+
+- ogni meta dichiara le sue basi con un peso e un tetto di notti;
+- `_allocate_nights()` distribuisce le notti in proporzione, rispettando i
+  tetti (a Rethymno si dorme una volta sola, il resto delle notti va a Chania);
+- nei giorni di trasferimento si può ancora attingere alla base che si sta
+  lasciando — è così che il Giorno 1 di Creta fa Cnosso di mattina e Rethymno
+  la sera;
+- sulle mete a base unica la riga sparisce: "Notte a Roma centro" ripetuto per
+  cinque giorni non è informazione.
 
 ### Vincoli di tempo rispettati
 
@@ -325,19 +374,52 @@ presentare dati fabbricati come informazione di viaggio, quindi:
   Rovaniemi a dicembre ci sono 3.5 ore di luce e l'itinerario lo dichiara.
   Il pavimento a 4.5h evita di svuotare la giornata: sotto il circolo polare
   d'inverno le attività (aurora, slitte, saune) si fanno al buio o al chiuso.
-- **Gli spostamenti contano**: 18-54 minuti medi a seconda del profilo di
-  mobilità, già scalati dal budget di ogni giornata.
+- **Gli spostamenti contano**: quelli tra basi sono curati, quelli interni
+  sono già dentro le ore del luogo (Elafonissi vale 6 ore, non 4, perché
+  include la strada da Chania).
 - **Mezza giornata dichiarata**: un'attività ≥ 4h occupa mattina *e*
   pomeriggio, invece di impilarci sopra dell'altro.
-- **Durata**: 3 o 5 giorni, riportati dentro `days_min`-`days_max` della meta.
+- **I `must` si piazzano comunque**, anche sforando il tetto orario. In stile
+  Relax il tetto è 5.5h ed Elafonissi ne vale 6: rispettarlo significherebbe
+  proporre Creta senza la spiaggia rosa, che non è un ritmo più lento, è
+  un'altra vacanza.
 
-### Varianti per stile
+### Stagionalità
 
-Selettore in cima all'expander: **Standard · Relax · Intenso · Foodie · Con
-bambini**. Cambiano tetto orario, numero di attività, quota di pause e quali
-tag hanno priorità (foodie → più cibo; relax e famiglia → giornate più corte,
-una attività al giorno). "Intenso" ha un tetto a 10 ore: oltre non è intenso,
-è una giornata che non regge.
+Un luogo fuori stagione **esce dall'itinerario e viene dichiarato**, con il
+motivo: "Gole di Samaria non è in programma: il sentiero è percorribile solo
+da maggio a ottobre". Vale anche per il riempimento generico —
+`_FILLER_TAG_MONTHS` impedisce che a luglio, dopo aver escluso l'aurora vera,
+comparisse un generico "uscita a caccia di aurora".
+
+### Varianti per durata e per stile
+
+Due selettori in cima all'expander:
+
+- **Durata** — due varianti curate per meta, ciascuna con un titolo e una riga
+  di posizionamento ("Il meglio del Nord-Ovest — ideale per chi visita l'isola
+  per la prima volta"). Le durate rispettano `days_min`-`days_max`.
+- **Stile** — Standard · Relax · Intenso · Foodie · Con bambini. Cambiano tetto
+  orario, numero di attività e quota di pause: *Intenso* aggiunge il Museo
+  Archeologico e le Gole di Samaria, *Relax* li toglie. "Intenso" ha un tetto a
+  10 ore: oltre non è intenso, è una giornata che non regge.
+
+### Itinerari dei viaggi combinati
+
+Un viaggio combinato è già una sequenza di tappe con trasferimenti in mezzo:
+la stessa struttura che il motore usa per le basi. `build_trip_itinerary()`
+riusa lo stesso codice trattando **ogni tappa come una base**, con i luoghi
+curati di quella meta nel suo pool e i tempi di trasferimento presi dagli
+archi calcolati dal Trip Builder invece che da una stima.
+
+Le basi interne di una meta collassano in una: dentro una tappa di un viaggio
+combinato non si cambia albergo. Il peso di ogni tappa è il suo `days_min`,
+così una città che si vede in due giorni non si prende tre notti.
+
+Se anche **una sola tappa** non ha contenuto curato, l'itinerario non compare
+e resta la sola timeline: un percorso metà con nomi propri e metà generico
+sarebbe peggio che non proporlo. Oggi non accade mai, ma la regola protegge se
+si aggiungono destinazioni nuove.
 
 ### Confronto pratico
 
@@ -432,6 +514,28 @@ calcolano da soli — non serve autorarli. Nessuna modifica al motore:
 Per nuove combinazioni multi-tappa: aggiungi una rotta in `trip_routes.py`
 (`RAW_ROUTES`) — senza rotta autorata, il Trip Builder non le combinerà mai.
 Un trip template curato si aggiunge a `RAW_TRIP_TEMPLATES`.
+
+### Aggiungere i luoghi curati di una meta
+
+Una voce in `places.py`, indicizzata per id di destinazione, con `bases`,
+`places` e `variants`. Senza, la meta funziona lo stesso e ricade sul motore
+generico. Regole imparate scrivendo le 79 esistenti:
+
+- **`how` è obbligatoria ed è il valore aggiunto.** Come ci si arriva e in che
+  modo si vive il posto — "in barca da Kissamos", "306 gradini", "prenotazione
+  a orario". È ciò che distingue un itinerario utile da un elenco di nomi.
+- **Servono 2-3 luoghi serali** (`slot: _EVENING`), altrimenti le sere
+  diventano un muro di "Cena tranquilla e rientro senza fretta".
+- **Attenzione alle attività da 4 ore o più**: occupano mattina e pomeriggio, e
+  non possono mai finire in un pomeriggio. Un'escursione da mezza giornata a
+  4.0h non entrerà da nessuna parte; a 3.5h riempie il pomeriggio.
+- **Circa 10 luoghi bastano fino a 6 giorni; per varianti da 9-14 servono 20.**
+  Sotto quella soglia metà degli slot torna generico.
+- **`months` solo per la stagionalità strutturale** (sentiero chiuso, traghetti
+  fermi, sole di mezzanotte), mai per orari o prezzi.
+- **Niente contenuto incerto**: se non si conosce la modalità reale di un
+  luogo, meglio non inserirlo e lasciare il blocco generico, che è vago ma
+  non è sbagliato.
 
 ---
 
