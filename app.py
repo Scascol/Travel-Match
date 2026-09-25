@@ -366,12 +366,162 @@ def inject_css() -> None:
         che si vede, deve dare respiro prima ancora che informazione. */
         .tm-hero-landing {{
             text-align: center;
-            padding: 4rem 2.6rem;
+            /* Più aria sotto che sopra: è la "pista" su cui l'aereo rulla
+            prima di salire, e tiene la traiettoria lontana dal sottotitolo. */
+            padding: 3.6rem 2.6rem 6rem;
         }}
         .tm-hero-landing p {{
             margin-left: auto;
             margin-right: auto;
             font-size: 1.22rem;
+        }}
+
+        /* Decollo animato della home. Solo CSS, niente librerie né immagini.
+        Aereo e scia seguono la stessa curva di Bézier: la scia è un path SVG
+        in un viewBox 0-100 stirato sull'hero, l'aereo si muove con left/top
+        in percentuale, quindi un punto (x, y) del path coincide con left x% /
+        top y% a qualunque larghezza. I fotogrammi sono campionati per
+        lunghezza d'arco, così la testa della scia (che avanza per lunghezza
+        d'arco) resta attaccata alla coda dell'aereo invece di superarlo.
+        La curva resta bassa sotto il testo e sale solo sul lato destro. */
+        .tm-hero > .tm-sky {{
+            position: absolute;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+        }}
+        .tm-sky svg.tm-contrail {{
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            overflow: visible;
+        }}
+        .tm-sky svg.tm-contrail {{ animation: tm-contrail 10s linear infinite; }}
+        .tm-contrail path {{
+            fill: none;
+            stroke: url(#tm-contrail-fade);
+            stroke-width: 2.5;
+            stroke-linecap: round;
+        }}
+        .tm-plane {{
+            position: absolute;
+            left: -8%;
+            top: 90%;
+            width: 3.4rem;
+            height: 3.4rem;
+            color: #FFFFFF;
+            filter: drop-shadow(0 6px 10px rgba(10, 30, 90, 0.35));
+            animation: tm-takeoff 10s linear infinite;
+        }}
+        .tm-plane svg {{ width: 100%; height: 100%; transform: rotate(90deg); }}
+        @keyframes tm-takeoff {{
+            0%     {{ left: -8.0%; top: 90.0%; transform: translate(-50%, -50%) rotate(0deg) scale(0.75); opacity: 1; }}
+            5.2%   {{ left: 7.4%; top: 90.3%; transform: translate(-50%, -50%) rotate(0deg) scale(0.80); }}
+            10.3%  {{ left: 22.9%; top: 90.1%; transform: translate(-50%, -50%) rotate(-1deg) scale(0.84); }}
+            15.5%  {{ left: 38.3%; top: 88.7%; transform: translate(-50%, -50%) rotate(-3deg) scale(0.89); }}
+            20.7%  {{ left: 53.3%; top: 85.4%; transform: translate(-50%, -50%) rotate(-6deg) scale(0.93); }}
+            25.8%  {{ left: 67.3%; top: 79.0%; transform: translate(-50%, -50%) rotate(-12deg) scale(0.98); }}
+            31%    {{ left: 79.3%; top: 69.3%; transform: translate(-50%, -50%) rotate(-19deg) scale(1.02); }}
+            36.2%  {{ left: 88.7%; top: 57.1%; transform: translate(-50%, -50%) rotate(-28deg) scale(1.07); }}
+            41.3%  {{ left: 95.8%; top: 43.4%; transform: translate(-50%, -50%) rotate(-37deg) scale(1.12); }}
+            46.5%  {{ left: 101.3%; top: 29.0%; transform: translate(-50%, -50%) rotate(-45deg) scale(1.16); }}
+            51.7%  {{ left: 105.6%; top: 14.2%; transform: translate(-50%, -50%) rotate(-52deg) scale(1.21); }}
+            56.8%  {{ left: 109.1%; top: -0.9%; transform: translate(-50%, -50%) rotate(-58deg) scale(1.25); }}
+            62%    {{ left: 112.0%; top: -16.0%; transform: translate(-50%, -50%) rotate(-63deg) scale(1.30); opacity: 1; }}
+            62.1%, 100% {{ left: 112.0%; top: -16.0%; opacity: 0; }}
+        }}
+        /* La scia si scopre da sinistra a destra, ritagliata a 3 punti dietro
+        la posizione orizzontale dell'aereo: funziona perché la curva avanza
+        sempre verso destra. Niente stroke-dasharray: con uno spessore
+        costante (non-scaling-stroke) i trattini diventerebbero pixel veri e
+        la scia uscirebbe tratteggiata. */
+        @keyframes tm-contrail {{
+            0%     {{ clip-path: inset(0 111% 0 0); opacity: 1; }}
+            5.2%   {{ clip-path: inset(0 95.6% 0 0); }}
+            10.3%  {{ clip-path: inset(0 80.1% 0 0); }}
+            15.5%  {{ clip-path: inset(0 64.7% 0 0); }}
+            20.7%  {{ clip-path: inset(0 49.7% 0 0); }}
+            25.8%  {{ clip-path: inset(0 35.7% 0 0); }}
+            31%    {{ clip-path: inset(0 23.7% 0 0); }}
+            36.2%  {{ clip-path: inset(0 14.3% 0 0); }}
+            41.3%  {{ clip-path: inset(0 7.2% 0 0); }}
+            46.5%  {{ clip-path: inset(0 1.7% 0 0); }}
+            51.7%  {{ clip-path: inset(0 0% 0 0); opacity: 1; }}
+            82%, 100% {{ clip-path: inset(0 0% 0 0); opacity: 0; }}
+        }}
+        /* Nuvole che scorrono lente dietro l'aereo: danno profondità e fanno
+        sembrare il cielo vivo anche nei secondi in cui l'aereo non c'è. */
+        .tm-cloud {{
+            position: absolute;
+            width: 7rem;
+            height: 2.2rem;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.16);
+            animation: tm-drift linear infinite;
+        }}
+        .tm-cloud::before, .tm-cloud::after {{
+            content: "";
+            position: absolute;
+            border-radius: 50%;
+            background: inherit;
+        }}
+        .tm-cloud::before {{ width: 3.2rem; height: 3.2rem; top: -1.5rem; left: 1.1rem; }}
+        .tm-cloud::after  {{ width: 2.4rem; height: 2.4rem; top: -1rem;  left: 3.6rem; }}
+        .tm-cloud-1 {{ top: 18%; animation-duration: 38s; animation-delay: -6s; }}
+        .tm-cloud-2 {{ top: 58%; transform: scale(0.7); animation-duration: 52s; animation-delay: -30s; opacity: 0.8; }}
+        .tm-cloud-3 {{ top: 34%; transform: scale(0.5); animation-duration: 64s; animation-delay: -18s; opacity: 0.6; }}
+        @keyframes tm-drift {{
+            from {{ left: -12rem; }}
+            to   {{ left: 110%; }}
+        }}
+        /* Telefono: l'hero diventa stretto e alto, e la curva desktop lì
+        sarebbe una parete verticale con l'aereo inclinato in modo diverso
+        dalla scia (gli angoli dipendono dalle proporzioni dell'hero). Qui
+        c'è una traiettoria dedicata, più morbida, che resta nella fascia
+        bassa sotto il testo ed esce dal lato destro. */
+        .tm-contrail .tm-path-mobile {{ display: none; }}
+        @media (max-width: 640px) {{
+            .tm-hero-landing {{ padding: 2.6rem 1.4rem 7rem; }}
+            .tm-hero-landing h1 {{ font-size: 2.2rem; }}
+            .tm-contrail .tm-path-desktop {{ display: none; }}
+            .tm-contrail .tm-path-mobile {{ display: inline; }}
+            .tm-plane {{ width: 2.8rem; height: 2.8rem; animation-name: tm-takeoff-m; }}
+            .tm-sky svg.tm-contrail {{ animation-name: tm-contrail-m; }}
+        }}
+        @keyframes tm-takeoff-m {{
+            0%     {{ left: -15.0%; top: 92.0%; transform: translate(-50%, -50%) rotate(0deg) scale(0.80); opacity: 1; }}
+            7.8%   {{ left: 3.4%;   top: 92.2%; transform: translate(-50%, -50%) rotate(0deg) scale(0.84); }}
+            15.5%  {{ left: 20.6%;  top: 91.8%; transform: translate(-50%, -50%) rotate(-3deg) scale(0.88); }}
+            23.2%  {{ left: 37.1%;  top: 90.8%; transform: translate(-50%, -50%) rotate(-6deg) scale(0.91); }}
+            31%    {{ left: 53.2%;  top: 88.9%; transform: translate(-50%, -50%) rotate(-11deg) scale(0.95); }}
+            38.8%  {{ left: 69.3%;  top: 85.8%; transform: translate(-50%, -50%) rotate(-16deg) scale(0.99); }}
+            46.5%  {{ left: 86.0%;  top: 81.2%; transform: translate(-50%, -50%) rotate(-22deg) scale(1.02); }}
+            54.2%  {{ left: 104.1%; top: 74.3%; transform: translate(-50%, -50%) rotate(-28deg) scale(1.06); }}
+            62%    {{ left: 125.0%; top: 64.0%; transform: translate(-50%, -50%) rotate(-35deg) scale(1.10); opacity: 1; }}
+            62.1%, 100% {{ left: 125.0%; top: 64.0%; opacity: 0; }}
+        }}
+        @keyframes tm-contrail-m {{
+            0%     {{ clip-path: inset(0 120% 0 0); opacity: 1; }}
+            7.8%   {{ clip-path: inset(0 101.6% 0 0); }}
+            15.5%  {{ clip-path: inset(0 84.4% 0 0); }}
+            23.2%  {{ clip-path: inset(0 67.9% 0 0); }}
+            31%    {{ clip-path: inset(0 51.8% 0 0); }}
+            38.8%  {{ clip-path: inset(0 35.7% 0 0); }}
+            46.5%  {{ clip-path: inset(0 19% 0 0); }}
+            54.2%  {{ clip-path: inset(0 0.9% 0 0); opacity: 1; }}
+            82%, 100% {{ clip-path: inset(0 0% 0 0); opacity: 0; }}
+        }}
+        /* Chi ha chiesto al sistema meno movimento vede l'aereo fermo, già in
+        quota sulla destra, e le nuvole immobili. */
+        @media (prefers-reduced-motion: reduce) {{
+            .tm-plane, .tm-sky svg.tm-contrail, .tm-cloud {{ animation: none; }}
+            .tm-plane {{ left: 95.8%; top: 43.4%; transform: translate(-50%, -50%) rotate(-37deg) scale(1.12); }}
+            .tm-sky svg.tm-contrail {{ clip-path: inset(0 7.2% 0 0); opacity: 0.6; }}
+        }}
+        @media (prefers-reduced-motion: reduce) and (max-width: 640px) {{
+            .tm-plane {{ left: 86%; top: 81.2%; transform: translate(-50%, -50%) rotate(-22deg); }}
+            .tm-sky svg.tm-contrail {{ clip-path: inset(0 19% 0 0); }}
         }}
         .tm-landing-divider {{
             text-align: center;
@@ -1038,7 +1188,29 @@ def render_landing() -> None:
     st.markdown(
         """
         <div class="tm-hero tm-hero-landing">
-            <h1>✈️ TravelMatch</h1>
+            <div class="tm-sky" aria-hidden="true">
+                <div class="tm-cloud tm-cloud-1"></div>
+                <div class="tm-cloud tm-cloud-2"></div>
+                <div class="tm-cloud tm-cloud-3"></div>
+                <svg class="tm-contrail" viewBox="0 0 100 100" preserveAspectRatio="none">
+                    <defs>
+                        <linearGradient id="tm-contrail-fade" x1="0" y1="0" x2="1" y2="0">
+                            <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0"></stop>
+                            <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.6"></stop>
+                        </linearGradient>
+                    </defs>
+                    <path class="tm-path-desktop" d="M -8 90 C 60 92, 94 88, 112 -16"
+                          vector-effect="non-scaling-stroke"></path>
+                    <path class="tm-path-mobile" d="M -15 92 C 40 93, 78 90, 125 64"
+                          vector-effect="non-scaling-stroke"></path>
+                </svg>
+                <div class="tm-plane">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"></path>
+                    </svg>
+                </div>
+            </div>
+            <h1>TravelMatch</h1>
             <p>Dove dovresti andare <b>davvero</b> in vacanza?<br>
             Rispondi a qualche domanda, ci pensiamo noi.</p>
         </div>
