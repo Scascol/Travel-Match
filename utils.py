@@ -180,11 +180,15 @@ QUICK_START_OPTIONS = [
     ("romantic", "❤️ Voglio una fuga romantica"),
     ("social", "🎉 Voglio conoscere gente"),
     ("build_trip", "✈️ Costruisci il mio viaggio"),
-    ("surprise", "🎲 Non ne ho idea. Sorprendimi."),
+    ("surprise", "🎲 Sorprendimi"),
     ("controlled_surprise", "🎯 Sorprendimi, ma con dei paletti"),
     ("first_solo_trip", "🧳 È il mio primo viaggio da solo/a"),
     ("gift_surprise", "🎁 Voglio regalare un viaggio (sorpresa)"),
 ]
+
+# Le scorciatoie sempre in vista nella home; tutte le altre stanno nel menu
+# "Altre idee di viaggio", così la pagina non diventa un muro di bottoni.
+QUICK_START_FEATURED = ("surprise", "first_solo_trip")
 
 REFINEMENT_ACTIONS = [
     ("cheaper", "💰 Più economico"),

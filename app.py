@@ -102,6 +102,7 @@ from utils import (
     PACE_LABELS,
     PEOPLE_OPTIONS,
     PERIOD_OPTIONS,
+    QUICK_START_FEATURED,
     QUICK_START_OPTIONS,
     REFINEMENT_ACTIONS,
     SOCIAL_PREFERENCE_OPTIONS,
@@ -377,88 +378,179 @@ def inject_css() -> None:
         }}
 
         /* Decollo animato della home. Solo CSS, niente librerie né immagini.
-        Aereo e scia seguono la stessa curva di Bézier: la scia è un path SVG
-        in un viewBox 0-100 stirato sull'hero, l'aereo si muove con left/top
-        in percentuale, quindi un punto (x, y) del path coincide con left x% /
-        top y% a qualunque larghezza. I fotogrammi sono campionati per
-        lunghezza d'arco, così la testa della scia (che avanza per lunghezza
-        d'arco) resta attaccata alla coda dell'aereo invece di superarlo.
-        La curva resta bassa sotto il testo e sale solo sul lato destro. */
+
+        Tutto è animato con `transform` e `opacity`, le sole proprietà che il
+        browser muove sul thread grafico. Non è un vezzo: la prima versione
+        usava left/top e clip-path, che girano sul thread principale, mentre
+        l'opacità gira sull'altro. Al cambio di giro l'opacità tornava a 1
+        qualche fotogramma prima che il ritaglio della scia si azzerasse, e la
+        scia intera lampeggiava; con Streamlit al lavoro il lampo durava di più.
+
+        - L'aereo sta in due contenitori grandi quanto l'hero: uno trasla in X,
+          l'altro in Y. Una translate in % si riferisce all'elemento stesso,
+          quindi su un contenitore largo quanto l'hero translateX(40%) sposta
+          del 40% dell'hero. Il punto (x, y) del path SVG, disegnato in un
+          viewBox 0-100 stirato sull'hero, coincide così con l'aereo a
+          qualunque larghezza.
+        - La scia si scopre con due livelli che traslano in versi opposti:
+          quello esterno taglia (overflow hidden), quello interno rimette la
+          scia al suo posto. Funziona perché la curva va sempre verso destra.
+        - I fotogrammi sono campionati per lunghezza d'arco; la scia resta
+          qualche punto dietro l'aereo, per nascere dalla coda e non dal muso.
+        - Al cambio di giro scia e aereo restano a opacità 0 per qualche
+          istante: anche un fotogramma in ritardo non si vede. */
         .tm-hero > .tm-sky {{
             position: absolute;
             inset: 0;
             z-index: 0;
             pointer-events: none;
         }}
-        .tm-sky svg.tm-contrail {{
+        .tm-trail, .tm-trail-in, .tm-fly-x, .tm-fly-y {{
+            position: absolute;
+            inset: 0;
+            will-change: transform;
+        }}
+        .tm-trail {{
+            overflow: hidden;
+            animation: tm-trail-reveal 10s linear infinite, tm-trail-op 10s linear infinite;
+        }}
+        .tm-trail-in {{ animation: tm-trail-counter 10s linear infinite; }}
+        .tm-trail svg {{
             position: absolute;
             inset: 0;
             width: 100%;
             height: 100%;
             overflow: visible;
         }}
-        .tm-sky svg.tm-contrail {{ animation: tm-contrail 10s linear infinite; }}
-        .tm-contrail path {{
+        .tm-trail path {{
             fill: none;
             stroke: url(#tm-contrail-fade);
             stroke-width: 2.5;
             stroke-linecap: round;
         }}
+        .tm-fly-x {{ animation: tm-fly-x 10s linear infinite; }}
+        .tm-fly-y {{ animation: tm-fly-y 10s linear infinite; }}
         .tm-plane {{
             position: absolute;
-            left: -8%;
-            top: 90%;
+            left: 0;
+            top: 0;
             width: 3.4rem;
             height: 3.4rem;
+            margin: -1.7rem 0 0 -1.7rem;
             color: #FFFFFF;
             filter: drop-shadow(0 6px 10px rgba(10, 30, 90, 0.35));
-            animation: tm-takeoff 10s linear infinite;
+            will-change: transform, opacity;
+            animation: tm-plane-rot 10s linear infinite, tm-plane-op 10s linear infinite;
         }}
         .tm-plane svg {{ width: 100%; height: 100%; transform: rotate(90deg); }}
-        @keyframes tm-takeoff {{
-            0%     {{ left: -8.0%; top: 90.0%; transform: translate(-50%, -50%) rotate(0deg) scale(0.75); opacity: 1; }}
-            5.2%   {{ left: 7.4%; top: 90.3%; transform: translate(-50%, -50%) rotate(0deg) scale(0.80); }}
-            10.3%  {{ left: 22.9%; top: 90.1%; transform: translate(-50%, -50%) rotate(-1deg) scale(0.84); }}
-            15.5%  {{ left: 38.3%; top: 88.7%; transform: translate(-50%, -50%) rotate(-3deg) scale(0.89); }}
-            20.7%  {{ left: 53.3%; top: 85.4%; transform: translate(-50%, -50%) rotate(-6deg) scale(0.93); }}
-            25.8%  {{ left: 67.3%; top: 79.0%; transform: translate(-50%, -50%) rotate(-12deg) scale(0.98); }}
-            31%    {{ left: 79.3%; top: 69.3%; transform: translate(-50%, -50%) rotate(-19deg) scale(1.02); }}
-            36.2%  {{ left: 88.7%; top: 57.1%; transform: translate(-50%, -50%) rotate(-28deg) scale(1.07); }}
-            41.3%  {{ left: 95.8%; top: 43.4%; transform: translate(-50%, -50%) rotate(-37deg) scale(1.12); }}
-            46.5%  {{ left: 101.3%; top: 29.0%; transform: translate(-50%, -50%) rotate(-45deg) scale(1.16); }}
-            51.7%  {{ left: 105.6%; top: 14.2%; transform: translate(-50%, -50%) rotate(-52deg) scale(1.21); }}
-            56.8%  {{ left: 109.1%; top: -0.9%; transform: translate(-50%, -50%) rotate(-58deg) scale(1.25); }}
-            62%    {{ left: 112.0%; top: -16.0%; transform: translate(-50%, -50%) rotate(-63deg) scale(1.30); opacity: 1; }}
-            62.1%, 100% {{ left: 112.0%; top: -16.0%; opacity: 0; }}
+        @keyframes tm-fly-x {{
+            0%     {{ transform: translateX(-8.0%); }}
+            5.2%   {{ transform: translateX(7.4%); }}
+            10.3%  {{ transform: translateX(22.9%); }}
+            15.5%  {{ transform: translateX(38.3%); }}
+            20.7%  {{ transform: translateX(53.3%); }}
+            25.8%  {{ transform: translateX(67.3%); }}
+            31%    {{ transform: translateX(79.3%); }}
+            36.2%  {{ transform: translateX(88.7%); }}
+            41.3%  {{ transform: translateX(95.8%); }}
+            46.5%  {{ transform: translateX(101.3%); }}
+            51.7%  {{ transform: translateX(105.6%); }}
+            56.8%  {{ transform: translateX(109.1%); }}
+            62%    {{ transform: translateX(112.0%); }}
+            62.1%, 100% {{ transform: translateX(112.0%); }}
         }}
-        /* La scia si scopre da sinistra a destra, ritagliata a 3 punti dietro
-        la posizione orizzontale dell'aereo: funziona perché la curva avanza
-        sempre verso destra. Niente stroke-dasharray: con uno spessore
-        costante (non-scaling-stroke) i trattini diventerebbero pixel veri e
-        la scia uscirebbe tratteggiata. */
-        @keyframes tm-contrail {{
-            0%     {{ clip-path: inset(0 111% 0 0); opacity: 1; }}
-            5.2%   {{ clip-path: inset(0 95.6% 0 0); }}
-            10.3%  {{ clip-path: inset(0 80.1% 0 0); }}
-            15.5%  {{ clip-path: inset(0 64.7% 0 0); }}
-            20.7%  {{ clip-path: inset(0 49.7% 0 0); }}
-            25.8%  {{ clip-path: inset(0 35.7% 0 0); }}
-            31%    {{ clip-path: inset(0 23.7% 0 0); }}
-            36.2%  {{ clip-path: inset(0 14.3% 0 0); }}
-            41.3%  {{ clip-path: inset(0 7.2% 0 0); }}
-            46.5%  {{ clip-path: inset(0 1.7% 0 0); }}
-            51.7%  {{ clip-path: inset(0 0% 0 0); opacity: 1; }}
-            82%, 100% {{ clip-path: inset(0 0% 0 0); opacity: 0; }}
+        @keyframes tm-fly-y {{
+            0%     {{ transform: translateY(90.0%); }}
+            5.2%   {{ transform: translateY(90.3%); }}
+            10.3%  {{ transform: translateY(90.1%); }}
+            15.5%  {{ transform: translateY(88.7%); }}
+            20.7%  {{ transform: translateY(85.4%); }}
+            25.8%  {{ transform: translateY(79.0%); }}
+            31%    {{ transform: translateY(69.3%); }}
+            36.2%  {{ transform: translateY(57.1%); }}
+            41.3%  {{ transform: translateY(43.4%); }}
+            46.5%  {{ transform: translateY(29.0%); }}
+            51.7%  {{ transform: translateY(14.2%); }}
+            56.8%  {{ transform: translateY(-0.9%); }}
+            62%    {{ transform: translateY(-16.0%); }}
+            62.1%, 100% {{ transform: translateY(-16.0%); }}
+        }}
+        @keyframes tm-plane-rot {{
+            0%     {{ transform: rotate(0deg) scale(0.75); }}
+            5.2%   {{ transform: rotate(0deg) scale(0.80); }}
+            10.3%  {{ transform: rotate(-1deg) scale(0.84); }}
+            15.5%  {{ transform: rotate(-3deg) scale(0.89); }}
+            20.7%  {{ transform: rotate(-6deg) scale(0.93); }}
+            25.8%  {{ transform: rotate(-12deg) scale(0.98); }}
+            31%    {{ transform: rotate(-19deg) scale(1.02); }}
+            36.2%  {{ transform: rotate(-28deg) scale(1.07); }}
+            41.3%  {{ transform: rotate(-37deg) scale(1.12); }}
+            46.5%  {{ transform: rotate(-45deg) scale(1.16); }}
+            51.7%  {{ transform: rotate(-52deg) scale(1.21); }}
+            56.8%  {{ transform: rotate(-58deg) scale(1.25); }}
+            62%    {{ transform: rotate(-63deg) scale(1.30); }}
+            62.1%, 100% {{ transform: rotate(-63deg) scale(1.30); }}
+        }}
+        @keyframes tm-plane-op {{
+            0%     {{ opacity: 0; }}
+            2%     {{ opacity: 1; }}
+            62%    {{ opacity: 1; }}
+            62.1%, 100% {{ opacity: 0; }}
+        }}
+        @keyframes tm-trail-reveal {{
+            0%     {{ transform: translateX(-111.0%); }}
+            5.2%   {{ transform: translateX(-95.6%); }}
+            10.3%  {{ transform: translateX(-80.1%); }}
+            15.5%  {{ transform: translateX(-64.7%); }}
+            20.7%  {{ transform: translateX(-49.7%); }}
+            25.8%  {{ transform: translateX(-35.7%); }}
+            31%    {{ transform: translateX(-23.7%); }}
+            36.2%  {{ transform: translateX(-14.3%); }}
+            41.3%  {{ transform: translateX(-7.2%); }}
+            46.5%  {{ transform: translateX(-1.7%); }}
+            51.7%  {{ transform: translateX(-0.0%); }}
+            56.8%  {{ transform: translateX(-0.0%); }}
+            62%    {{ transform: translateX(-0.0%); }}
+            100% {{ transform: translateX(0%); }}
+        }}
+        @keyframes tm-trail-counter {{
+            0%     {{ transform: translateX(111.0%); }}
+            5.2%   {{ transform: translateX(95.6%); }}
+            10.3%  {{ transform: translateX(80.1%); }}
+            15.5%  {{ transform: translateX(64.7%); }}
+            20.7%  {{ transform: translateX(49.7%); }}
+            25.8%  {{ transform: translateX(35.7%); }}
+            31%    {{ transform: translateX(23.7%); }}
+            36.2%  {{ transform: translateX(14.3%); }}
+            41.3%  {{ transform: translateX(7.2%); }}
+            46.5%  {{ transform: translateX(1.7%); }}
+            51.7%  {{ transform: translateX(0.0%); }}
+            56.8%  {{ transform: translateX(0.0%); }}
+            62%    {{ transform: translateX(0.0%); }}
+            100% {{ transform: translateX(0%); }}
+        }}
+        @keyframes tm-trail-op {{
+            0%, 4% {{ opacity: 0; }}
+            5.2%   {{ opacity: 1; }}
+            52%    {{ opacity: 1; }}
+            82%, 100% {{ opacity: 0; }}
         }}
         /* Nuvole che scorrono lente dietro l'aereo: danno profondità e fanno
-        sembrare il cielo vivo anche nei secondi in cui l'aereo non c'è. */
+        sembrare il cielo vivo anche nei secondi in cui l'aereo non c'è.
+        Stesso principio dell'aereo: si muovono solo con transform. */
+        .tm-cloud-track {{
+            position: absolute;
+            inset: 0;
+            will-change: transform;
+            animation: tm-drift linear infinite;
+        }}
         .tm-cloud {{
             position: absolute;
+            left: -8rem;
             width: 7rem;
             height: 2.2rem;
             border-radius: 999px;
             background: rgba(255, 255, 255, 0.16);
-            animation: tm-drift linear infinite;
         }}
         .tm-cloud::before, .tm-cloud::after {{
             content: "";
@@ -468,61 +560,155 @@ def inject_css() -> None:
         }}
         .tm-cloud::before {{ width: 3.2rem; height: 3.2rem; top: -1.5rem; left: 1.1rem; }}
         .tm-cloud::after  {{ width: 2.4rem; height: 2.4rem; top: -1rem;  left: 3.6rem; }}
-        .tm-cloud-1 {{ top: 18%; animation-duration: 38s; animation-delay: -6s; }}
-        .tm-cloud-2 {{ top: 58%; transform: scale(0.7); animation-duration: 52s; animation-delay: -30s; opacity: 0.8; }}
-        .tm-cloud-3 {{ top: 34%; transform: scale(0.5); animation-duration: 64s; animation-delay: -18s; opacity: 0.6; }}
+        .tm-cloud-1 {{ animation-duration: 38s; animation-delay: -6s; }}
+        .tm-cloud-2 {{ animation-duration: 52s; animation-delay: -30s; opacity: 0.6; }}
+        .tm-cloud-3 {{ animation-duration: 64s; animation-delay: -18s; opacity: 0.45; }}
+        .tm-cloud-1 .tm-cloud {{ top: 18%; }}
+        .tm-cloud-2 .tm-cloud {{ top: 58%; }}
+        .tm-cloud-3 .tm-cloud {{ top: 34%; }}
+        /* Il binario è largo quanto l'hero, quindi le percentuali sono
+        percentuali dell'hero: la nuvola entra da sinistra ed esce a destra a
+        qualunque larghezza, invece di sparire per metà del giro su un
+        telefono. */
         @keyframes tm-drift {{
-            from {{ left: -12rem; }}
-            to   {{ left: 110%; }}
+            from {{ transform: translateX(0%); }}
+            to   {{ transform: translateX(calc(100% + 9rem)); }}
         }}
         /* Telefono: l'hero diventa stretto e alto, e la curva desktop lì
         sarebbe una parete verticale con l'aereo inclinato in modo diverso
         dalla scia (gli angoli dipendono dalle proporzioni dell'hero). Qui
         c'è una traiettoria dedicata, più morbida, che resta nella fascia
         bassa sotto il testo ed esce dal lato destro. */
-        .tm-contrail .tm-path-mobile {{ display: none; }}
+        .tm-trail .tm-path-mobile {{ display: none; }}
         @media (max-width: 640px) {{
             .tm-hero-landing {{ padding: 2.6rem 1.4rem 7rem; }}
             .tm-hero-landing h1 {{ font-size: 2.2rem; }}
-            .tm-contrail .tm-path-desktop {{ display: none; }}
-            .tm-contrail .tm-path-mobile {{ display: inline; }}
-            .tm-plane {{ width: 2.8rem; height: 2.8rem; animation-name: tm-takeoff-m; }}
-            .tm-sky svg.tm-contrail {{ animation-name: tm-contrail-m; }}
+            .tm-trail .tm-path-desktop {{ display: none; }}
+            .tm-trail .tm-path-mobile {{ display: inline; }}
+            .tm-plane {{ width: 2.8rem; height: 2.8rem; margin: -1.4rem 0 0 -1.4rem;
+                         animation-name: tm-plane-rot-m, tm-plane-op-m; }}
+            .tm-fly-x {{ animation-name: tm-fly-x-m; }}
+            .tm-fly-y {{ animation-name: tm-fly-y-m; }}
+            .tm-trail {{ animation-name: tm-trail-reveal-m, tm-trail-op-m; }}
+            .tm-trail-in {{ animation-name: tm-trail-counter-m; }}
         }}
-        @keyframes tm-takeoff-m {{
-            0%     {{ left: -15.0%; top: 92.0%; transform: translate(-50%, -50%) rotate(0deg) scale(0.80); opacity: 1; }}
-            7.8%   {{ left: 3.4%;   top: 92.2%; transform: translate(-50%, -50%) rotate(0deg) scale(0.84); }}
-            15.5%  {{ left: 20.6%;  top: 91.8%; transform: translate(-50%, -50%) rotate(-3deg) scale(0.88); }}
-            23.2%  {{ left: 37.1%;  top: 90.8%; transform: translate(-50%, -50%) rotate(-6deg) scale(0.91); }}
-            31%    {{ left: 53.2%;  top: 88.9%; transform: translate(-50%, -50%) rotate(-11deg) scale(0.95); }}
-            38.8%  {{ left: 69.3%;  top: 85.8%; transform: translate(-50%, -50%) rotate(-16deg) scale(0.99); }}
-            46.5%  {{ left: 86.0%;  top: 81.2%; transform: translate(-50%, -50%) rotate(-22deg) scale(1.02); }}
-            54.2%  {{ left: 104.1%; top: 74.3%; transform: translate(-50%, -50%) rotate(-28deg) scale(1.06); }}
-            62%    {{ left: 125.0%; top: 64.0%; transform: translate(-50%, -50%) rotate(-35deg) scale(1.10); opacity: 1; }}
-            62.1%, 100% {{ left: 125.0%; top: 64.0%; opacity: 0; }}
+        @keyframes tm-fly-x-m {{
+            0%     {{ transform: translateX(-15.0%); }}
+            7.8%   {{ transform: translateX(3.4%); }}
+            15.5%  {{ transform: translateX(20.6%); }}
+            23.2%  {{ transform: translateX(37.1%); }}
+            31%    {{ transform: translateX(53.2%); }}
+            38.8%  {{ transform: translateX(69.3%); }}
+            46.5%  {{ transform: translateX(86.0%); }}
+            54.2%  {{ transform: translateX(104.1%); }}
+            62%    {{ transform: translateX(125.0%); }}
+            62.1%, 100% {{ transform: translateX(125.0%); }}
         }}
-        @keyframes tm-contrail-m {{
-            0%     {{ clip-path: inset(0 120% 0 0); opacity: 1; }}
-            7.8%   {{ clip-path: inset(0 101.6% 0 0); }}
-            15.5%  {{ clip-path: inset(0 84.4% 0 0); }}
-            23.2%  {{ clip-path: inset(0 67.9% 0 0); }}
-            31%    {{ clip-path: inset(0 51.8% 0 0); }}
-            38.8%  {{ clip-path: inset(0 35.7% 0 0); }}
-            46.5%  {{ clip-path: inset(0 19% 0 0); }}
-            54.2%  {{ clip-path: inset(0 0.9% 0 0); opacity: 1; }}
-            82%, 100% {{ clip-path: inset(0 0% 0 0); opacity: 0; }}
+        @keyframes tm-fly-y-m {{
+            0%     {{ transform: translateY(92.0%); }}
+            7.8%   {{ transform: translateY(92.2%); }}
+            15.5%  {{ transform: translateY(91.8%); }}
+            23.2%  {{ transform: translateY(90.8%); }}
+            31%    {{ transform: translateY(88.9%); }}
+            38.8%  {{ transform: translateY(85.8%); }}
+            46.5%  {{ transform: translateY(81.2%); }}
+            54.2%  {{ transform: translateY(74.3%); }}
+            62%    {{ transform: translateY(64.0%); }}
+            62.1%, 100% {{ transform: translateY(64.0%); }}
+        }}
+        @keyframes tm-plane-rot-m {{
+            0%     {{ transform: rotate(0deg) scale(0.80); }}
+            7.8%   {{ transform: rotate(0deg) scale(0.84); }}
+            15.5%  {{ transform: rotate(-3deg) scale(0.88); }}
+            23.2%  {{ transform: rotate(-6deg) scale(0.91); }}
+            31%    {{ transform: rotate(-11deg) scale(0.95); }}
+            38.8%  {{ transform: rotate(-16deg) scale(0.99); }}
+            46.5%  {{ transform: rotate(-22deg) scale(1.02); }}
+            54.2%  {{ transform: rotate(-28deg) scale(1.06); }}
+            62%    {{ transform: rotate(-35deg) scale(1.10); }}
+            62.1%, 100% {{ transform: rotate(-35deg) scale(1.10); }}
+        }}
+        @keyframes tm-plane-op-m {{
+            0%     {{ opacity: 0; }}
+            2%     {{ opacity: 1; }}
+            62%    {{ opacity: 1; }}
+            62.1%, 100% {{ opacity: 0; }}
+        }}
+        @keyframes tm-trail-reveal-m {{
+            0%     {{ transform: translateX(-120.0%); }}
+            7.8%   {{ transform: translateX(-101.6%); }}
+            15.5%  {{ transform: translateX(-84.4%); }}
+            23.2%  {{ transform: translateX(-67.9%); }}
+            31%    {{ transform: translateX(-51.8%); }}
+            38.8%  {{ transform: translateX(-35.7%); }}
+            46.5%  {{ transform: translateX(-19.0%); }}
+            54.2%  {{ transform: translateX(-0.9%); }}
+            62%    {{ transform: translateX(-0.0%); }}
+            100% {{ transform: translateX(0%); }}
+        }}
+        @keyframes tm-trail-counter-m {{
+            0%     {{ transform: translateX(120.0%); }}
+            7.8%   {{ transform: translateX(101.6%); }}
+            15.5%  {{ transform: translateX(84.4%); }}
+            23.2%  {{ transform: translateX(67.9%); }}
+            31%    {{ transform: translateX(51.8%); }}
+            38.8%  {{ transform: translateX(35.7%); }}
+            46.5%  {{ transform: translateX(19.0%); }}
+            54.2%  {{ transform: translateX(0.9%); }}
+            62%    {{ transform: translateX(0.0%); }}
+            100% {{ transform: translateX(0%); }}
+        }}
+        @keyframes tm-trail-op-m {{
+            0%, 6% {{ opacity: 0; }}
+            7.8%   {{ opacity: 1; }}
+            52%    {{ opacity: 1; }}
+            82%, 100% {{ opacity: 0; }}
         }}
         /* Chi ha chiesto al sistema meno movimento vede l'aereo fermo, già in
-        quota sulla destra, e le nuvole immobili. */
+        quota sulla destra, con la scia disegnata e le nuvole immobili. */
         @media (prefers-reduced-motion: reduce) {{
-            .tm-plane, .tm-sky svg.tm-contrail, .tm-cloud {{ animation: none; }}
-            .tm-plane {{ left: 95.8%; top: 43.4%; transform: translate(-50%, -50%) rotate(-37deg) scale(1.12); }}
-            .tm-sky svg.tm-contrail {{ clip-path: inset(0 7.2% 0 0); opacity: 0.6; }}
+            .tm-plane, .tm-fly-x, .tm-fly-y, .tm-trail, .tm-trail-in, .tm-cloud-track {{ animation: none; }}
+            .tm-fly-x {{ transform: translateX(95.8%); }}
+            .tm-fly-y {{ transform: translateY(43.4%); }}
+            .tm-plane {{ transform: rotate(-37deg) scale(1.12); }}
+            .tm-trail {{ transform: translateX(-7.2%); opacity: 0.6; }}
+            .tm-trail-in {{ transform: translateX(7.2%); }}
+            .tm-cloud-1 {{ transform: translateX(30%); }}
+            .tm-cloud-2 {{ transform: translateX(80%); }}
+            .tm-cloud-3 {{ transform: translateX(55%); }}
         }}
         @media (prefers-reduced-motion: reduce) and (max-width: 640px) {{
-            .tm-plane {{ left: 86%; top: 81.2%; transform: translate(-50%, -50%) rotate(-22deg); }}
-            .tm-sky svg.tm-contrail {{ clip-path: inset(0 19% 0 0); }}
+            .tm-fly-x {{ transform: translateX(86%); }}
+            .tm-fly-y {{ transform: translateY(81.2%); }}
+            .tm-plane {{ transform: rotate(-22deg); }}
+            .tm-trail {{ transform: translateX(-19%); }}
+            .tm-trail-in {{ transform: translateX(19%); }}
         }}
+        /* Menu "Altre idee di viaggio": le voci dentro il pannello si
+        presentano come righe di un menu (testo a sinistra, niente bordo,
+        evidenziazione al passaggio) invece che come bottoni impilati. */
+        div[data-testid="stPopoverBody"] {{
+            padding: 0.4rem;
+            min-width: 19rem;
+            border-radius: 14px;
+        }}
+        div[data-testid="stPopoverBody"] div[data-testid="stElementContainer"] {{ margin-bottom: -0.55rem; }}
+        div[data-testid="stPopoverBody"] button {{
+            justify-content: flex-start;
+            text-align: left;
+            border: 1px solid transparent;
+            background: transparent;
+            border-radius: 10px;
+            padding: 0.55rem 0.8rem;
+            transition: background 0.15s ease, transform 0.15s ease;
+        }}
+        div[data-testid="stPopoverBody"] button:hover {{
+            background: {primary_light};
+            border-color: {primary_light};
+            transform: translateX(3px);
+        }}
+        div[data-testid="stPopoverBody"] button > div {{ justify-content: flex-start; }}
+        div[data-testid="stPopoverBody"] button p {{ font-size: 0.95rem; text-align: left; }}
         .tm-landing-divider {{
             text-align: center;
             font-family: {body_font};
@@ -1144,10 +1330,23 @@ def _prepared_df() -> pd.DataFrame:
     Se il filtro azzerasse i risultati lo ignoriamo: meglio mostrare mete
     "più impegnative" che una pagina vuota senza spiegazione."""
     prefs = st.session_state["prefs"]
-    df = load_destinations_df()
-    df = adjust_destinations_for_departure(df, prefs.get("departure_city"))
+    return _prepared_df_for(prefs.get("departure_city"), prefs.get("min_ease"))
 
-    min_ease = prefs.get("min_ease")
+
+# Cache: il dataset è statico e dipende solo dalla città di partenza e dal
+# filtro di facilità. Senza cache veniva ricostruito da zero otto volte per
+# ogni clic sulla pagina risultati (circa mezzo secondo buttato a interazione).
+# st.cache_data restituisce ogni volta una copia, quindi chi la modifica non
+# sporca la versione in cache.
+
+@st.cache_data(show_spinner=False)
+def _cached_destinations() -> pd.DataFrame:
+    return load_destinations_df()
+
+
+@st.cache_data(show_spinner=False)
+def _prepared_df_for(departure_city: str | None, min_ease: int | None) -> pd.DataFrame:
+    df = adjust_destinations_for_departure(_cached_destinations(), departure_city)
     if min_ease:
         df = df.copy()
         df["organizational_ease"] = df.apply(organizational_ease, axis=1)
@@ -1189,26 +1388,30 @@ def render_landing() -> None:
         """
         <div class="tm-hero tm-hero-landing">
             <div class="tm-sky" aria-hidden="true">
-                <div class="tm-cloud tm-cloud-1"></div>
-                <div class="tm-cloud tm-cloud-2"></div>
-                <div class="tm-cloud tm-cloud-3"></div>
-                <svg class="tm-contrail" viewBox="0 0 100 100" preserveAspectRatio="none">
-                    <defs>
-                        <linearGradient id="tm-contrail-fade" x1="0" y1="0" x2="1" y2="0">
-                            <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0"></stop>
-                            <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.6"></stop>
-                        </linearGradient>
-                    </defs>
-                    <path class="tm-path-desktop" d="M -8 90 C 60 92, 94 88, 112 -16"
-                          vector-effect="non-scaling-stroke"></path>
-                    <path class="tm-path-mobile" d="M -15 92 C 40 93, 78 90, 125 64"
-                          vector-effect="non-scaling-stroke"></path>
-                </svg>
-                <div class="tm-plane">
-                    <svg viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"></path>
+                <div class="tm-cloud-track tm-cloud-1"><div class="tm-cloud"></div></div>
+                <div class="tm-cloud-track tm-cloud-2"><div class="tm-cloud"></div></div>
+                <div class="tm-cloud-track tm-cloud-3"><div class="tm-cloud"></div></div>
+                <div class="tm-trail"><div class="tm-trail-in">
+                    <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+                        <defs>
+                            <linearGradient id="tm-contrail-fade" x1="0" y1="0" x2="1" y2="0">
+                                <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0"></stop>
+                                <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.6"></stop>
+                            </linearGradient>
+                        </defs>
+                        <path class="tm-path-desktop" d="M -8 90 C 60 92, 94 88, 112 -16"
+                              vector-effect="non-scaling-stroke"></path>
+                        <path class="tm-path-mobile" d="M -15 92 C 40 93, 78 90, 125 64"
+                              vector-effect="non-scaling-stroke"></path>
                     </svg>
-                </div>
+                </div></div>
+                <div class="tm-fly-x"><div class="tm-fly-y">
+                    <div class="tm-plane">
+                        <svg viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"></path>
+                        </svg>
+                    </div>
+                </div></div>
             </div>
             <h1>TravelMatch</h1>
             <p>Dove dovresti andare <b>davvero</b> in vacanza?<br>
@@ -1228,13 +1431,22 @@ def render_landing() -> None:
 
     st.markdown('<p class="tm-landing-divider">oppure parti da un\'idea</p>', unsafe_allow_html=True)
 
-    # Griglia a 3 colonne (invece di 4): pulsanti più larghi, etichette che
-    # non vanno a capo, più aria tra una scorciatoia e l'altra.
-    cols = st.columns(3)
-    for i, (key, label) in enumerate(QUICK_START_OPTIONS):
-        with cols[i % 3]:
-            if st.button(label, use_container_width=True, key=f"quick_{key}"):
+    # Una riga sola: le due scorciatoie più usate in vista, tutte le altre
+    # dentro un pannello a tendina. Prima erano dieci bottoni in griglia, e
+    # la home finiva per sembrare un modulo da compilare.
+    labels = dict(QUICK_START_OPTIONS)
+    first, second, menu = st.columns(3)
+    for col, key in zip((first, second), QUICK_START_FEATURED):
+        with col:
+            if st.button(labels[key], use_container_width=True, key=f"quick_{key}"):
                 handle_quick_start(key)
+    with menu:
+        with st.popover("✨ Altre idee di viaggio", use_container_width=True):
+            for key, label in QUICK_START_OPTIONS:
+                if key in QUICK_START_FEATURED:
+                    continue
+                if st.button(label, use_container_width=True, key=f"quick_{key}"):
+                    handle_quick_start(key)
 
     st.write("")
     _, loader, _ = st.columns([1, 2, 1])
@@ -3147,7 +3359,7 @@ def render_sidebar() -> None:
             # unico file salvato lato server finirebbe sovrascritto a ogni
             # utente (e visibile a chiunque lo ricarichi) — qui invece ognuno
             # gestisce il proprio file, in locale o online allo stesso modo.
-            df = load_destinations_df()
+            df = _cached_destinations()
             fav_rows = df[df["id"].isin(st.session_state["favorites"])][["id", "name", "country"]]
             results = st.session_state["results_bundle"]["results"] if st.session_state.get("results_bundle") is not None else pd.DataFrame()
             top_summary = results.head(5)[["id", "name", "match_score"]].to_dict("records") if not results.empty else []
@@ -3177,7 +3389,7 @@ def render_sidebar() -> None:
             st.rerun()
 
         st.divider()
-        n_destinations = len(load_destinations_df())
+        n_destinations = len(_cached_destinations())
         st.caption(f"TravelMatch v2.0 — dataset locale, {n_destinations} destinazioni + Trip Builder, nessuna connessione richiesta.")
 
 

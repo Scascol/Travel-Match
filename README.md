@@ -491,7 +491,11 @@ Palette "cielo" applicata a `.streamlit/config.toml` e al CSS globale in
 | Testo secondario | `#546E7A` |
 | Success / Warning | `#43A047` / `#FB8C00` |
 
-- **Home**: hero centrato con CTA singola, scorciatoie in griglia.
+- **Home**: hero centrato con CTA singola e un aereo che decolla in loop
+  (solo CSS, animato con `transform`/`opacity`; fermo per chi ha attivato
+  "riduci movimento"). Sotto, una riga sola: 🎲 Sorprendimi, 🧳 Primo viaggio
+  da solo/a e il menu a tendina "✨ Altre idee di viaggio" con le altre
+  scorciatoie (`QUICK_START_FEATURED` in `utils.py` decide quali restano fuori).
 - **Questionario**: 8 domande in card distinte e numerate ("Domanda X di 8"),
   dentro un unico form (non un wizard multi-step).
 - **Risultati**: vista compatta di default — pro/contro, breakdown costi,
@@ -540,6 +544,12 @@ generico. Regole imparate scrivendo le 79 esistenti:
 ---
 
 ## 14. Note di robustezza
+
+- **Prestazioni.** Il dataset (`_cached_destinations`, `_prepared_df_for`) è in
+  `st.cache_data`; immagini social e PDF sono in `lru_cache` nei rispettivi
+  moduli, che restano indipendenti da Streamlit. Prima venivano ricostruiti a
+  ogni clic — i PDF e le immagini anche con l'expander "Esporta" chiuso. Con
+  la cache un rerun della pagina risultati è sceso da ~1,4 s a ~0,8 s in locale.
 
 - Budget, durata, clima o tag mancanti non causano errori: ogni componente
   ha un valore neutro di fallback.
