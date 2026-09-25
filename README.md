@@ -42,16 +42,21 @@ stagionalità, non nomi generati (§8).
 
 ## 1. Installazione e struttura
 
-Requisiti: Python 3.10+ e **Streamlit ≥ 1.40** (serve `st.segmented_control`,
-usato per i controlli della pagina risultati).
+Requisiti: **Python 3.11+**. Le librerie in `requirements.txt` sono bloccate
+sulle versioni con cui l'app è stata provata (Streamlit 1.58.0, pandas 3.0.3,
+reportlab 5.0.1, Pillow 12.2.0): così Streamlit Cloud installa esattamente
+quelle, invece delle più recenti. Per aggiornarle si cambia il numero, si
+riprova tutto in locale e solo dopo si carica.
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Si apre su `http://localhost:8501`. Nessuna connessione internet richiesta
-dopo l'installazione: il dataset è locale (`destinations.py`).
+Si apre su `http://localhost:8501`. Il motore non fa chiamate di rete: il
+dataset è locale (`destinations.py`). Solo le foto delle mete arrivano da
+internet, caricate dal browser del visitatore; senza connessione al loro posto
+resta un gradiente, mai un'immagine rotta.
 
 ```text
 travelmatch/
@@ -62,6 +67,8 @@ travelmatch/
 ├── trip_presentation.py    # spiegazioni, timeline ed export testuale dei viaggi combinati
 ├── destinations.py         # dataset locale (79 destinazioni) + ritmo/stagionalità derivati
 ├── places.py               # luoghi curati per meta (911 voci): basi, durate, modalità, stagionalità
+├── catalog.py              # scheda vetrina di ogni meta: slug per i link, foto con crediti, zona, descrizione
+├── travel_estimates.py     # come arrivarci da Milano/Bergamo/Roma: aereo, treno, auto, auto+traghetto
 ├── insights.py             # Travel Style, DNA vs meta, giorno tipo, avvisi, anti-FOMO, facilità organizzativa
 ├── itinerary.py            # itinerari giorno per giorno (curati e generici), mobilità, zone, prenotazioni
 ├── checklist.py            # checklist di viaggio (cosa portare/lasciare a casa, documenti, consigli)
@@ -87,6 +94,10 @@ Quattro livelli indipendenti:
   separato da `destinations.py` perché serve solo agli itinerari e perché
   cresce con una granularità diversa: una meta ha ~35 campi, ma dai 10 ai 20
   luoghi.
+- **`catalog.py` — vetrina.** Come si presenta una meta fuori dal
+  questionario: slug stabile per i link (`?meta=creta`), foto Wikimedia con
+  autore e licenza, zona del mondo, descrizione di una riga. È pensato come
+  base dati anche per un futuro sito con dominio proprio.
 - **`recommender.py` / `trip_builder.py` — motore.** Puro Python + pandas,
   **zero dipendenze da Streamlit**: testabile in isolamento, riusabile in
   un'API o un altro frontend.
@@ -125,7 +136,7 @@ DEFAULT_WEIGHTS = {
 | **duration** | Sovrapposizione tra giorni desiderati e durata consigliata. |
 | **social** | Distanza tra lo slider di socialità e il livello sociale tipico della meta. |
 | **comfort** | Distanza tra il comfort desiderato e il `comfort_level` della meta. |
-| **distance** | Ore di volo vs limite scelto. |
+| **distance** | Ore di viaggio col mezzo scelto (`travel_hours`) vs limite scelto; senza città di partenza, ore di volo. |
 | **pace** | Il ritmo della meta (`pace_score`, formula in §6) vs l'intensità richiesta nel questionario. |
 
 Componenti secondarie a peso zero (romantic, adventure, relax, food, luxury,
@@ -171,8 +182,8 @@ valore supera 25 (altrimenti righe quasi vuote senza informazione).
 ## 5. Costi: scenari, dati statici, stagionalità
 
 Nel questionario il budget è **esplicitamente per persona o totale per il
-gruppo** (`app.PEOPLE_HEADCOUNT`): se scelto "totale", viene diviso per il
-numero di persone prima di entrare nello scoring — internamente il motore
+gruppo** : se scelto "totale", viene diviso per il
+numero di persone (`utils.PEOPLE_HEADCOUNT`) prima di entrare nello scoring — internamente il motore
 lavora sempre e solo con un budget per persona.
 
 **Tre scenari** (`utils.cost_scenarios`), letti dallo stesso range
@@ -206,6 +217,45 @@ restituisce **1.0 senza un periodo scelto** — retro-compatibilità piena, chi
 non indica quando parte vede i valori medi di sempre. Usata da
 `recommender.seasonal_cost_min` e `trip_builder.seasonal_trip_cost_min`, così
 destinazioni e itinerari non possono contraddirsi sullo stesso mese.
+
+---
+
+### Come arrivarci: città di partenza e mezzo (`travel_estimates.py`)
+
+Nel questionario si sceglie **da dove si parte** (Milano, Bergamo, Roma o
+"altro") e **come si preferisce viaggiare** (💡 il più conveniente, ✈️ aereo,
+🚆 treno, 🚗 auto). Per ogni meta `travel_options()` stima i mezzi sensati,
+con tempo **porta a porta, solo andata** e costo **a persona, andata e
+ritorno**:
+
+| Mezzo | Da dove vengono i numeri |
+|---|---|
+| ✈️ Aereo | Volo del dataset corretto per aeroporto (Roma hub intercontinentale, Bergamo low cost; da Bergamo i voli lunghi partono da Malpensa), + accesso all'aeroporto, 1h45 prima del volo e il tragitto dall'aeroporto d'arrivo. Per le mete italiane solo dove un volo ha senso (`_ITALY_FLIGHTS`). |
+| 🚆 Treno | Tabella scritta a mano di collegamenti reali (`_TRAIN`): tempi e prezzi tipici, max ~14 ore (anche notturni). Da Bergamo si passa da Milano se non c'è un collegamento dedicato. |
+| 🚗 Auto | Distanza in linea d'aria × fattore strada, con passaggi obbligati (Stretto di Messina, Nizza per la Spagna, Trieste per i Balcani). 100 km/h medi più le soste, max 13 ore di guida. Carburante e pedaggi **divisi tra chi viaggia** (5 posti per auto), più gli extra noti: Stretto, trafori alpini, Eurotunnel, vignette. |
+| ⛴️ Auto + traghetto | Rotte reali (`_FERRY_ROUTES`): Genova/Civitavecchia–Olbia, –Palermo, –Barcellona, Bari–Durazzo, Ancona/Bari–Patrasso, Pozzallo–Malta. Auto fino al porto + imbarco + traversata. |
+
+"Il più conveniente" confronta il costo medio a persona più 12 € per ogni
+ora di viaggio (`VALUE_OF_HOUR`): senza il valore del tempo vincerebbe
+sempre l'opzione da 20 ore che costa 10 € in meno. Ogni opzione riceve le
+etichette "il più conveniente", "più economico", "più veloce".
+
+**Nel motore** `apply_travel()` restituisce il dataset di sempre, con il
+costo del volo sostituito da quello del mezzo scelto (così budget, costi
+totali e viaggi combinati lo usano senza modifiche) e le colonne
+`travel_mode`, `travel_hours`, `travel_door_hours`, `travel_available`.
+`flight_hours` resta la durata del volo, perché altrove vuol dire "quanto è
+lontana" (profilo stagionale, avvisi per le famiglie). Scegliendo treno o
+auto **cambiano anche i consigli**: `keep_reachable()` lascia solo le mete
+raggiungibili così, e i viaggi combinati con un volo interno vengono
+scartati. La città di partenza non viene mai proposta come meta. Pagina
+meta, vetrina ed Esplora invece mostrano sempre tutte le mete
+(`_travel_df_for` senza filtri); se una meta è fuori dai consigli per come
+si vuole viaggiare, la pagina lo spiega.
+
+**In interfaccia** la sezione "Come arrivarci" di ogni meta mette i mezzi a
+confronto in schede; città e numero di persone si cambiano lì sul posto,
+quindi il confronto funziona anche per chi arriva da un link condiviso.
 
 ---
 
@@ -473,7 +523,13 @@ l'avviso esplicito quando quella durata non è adatta.
   dalla didascalia social (accompagna un'immagine).
 - **Card social** (`social_card.py`) — immagine PNG verticale con nome,
   match %, un'esperienza WOW e il costo, generata con Pillow (fallback alla
-  sola didascalia se non disponibile).
+  sola didascalia se non disponibile). Senza una ricerca alle spalle il badge
+  diventa "IDEA DI VIAGGIO".
+- **Link condivisibile** — ogni meta ha una pagina sua,
+  `…/?meta=<slug>&giorni=<N>`: riquadro con il link da copiare e pulsanti
+  WhatsApp/Telegram/Email. Il link entra anche nel riepilogo testuale, nella
+  versione stories e nella didascalia social. L'indirizzo pubblico è
+  `PUBLIC_APP_URL` in `app.py`: va aggiornato se l'app cambia sottodominio.
 
 ---
 
@@ -496,11 +552,38 @@ Palette "cielo" applicata a `.streamlit/config.toml` e al CSS globale in
   "riduci movimento"). Sotto, una riga sola: 🎲 Sorprendimi, 🧳 Primo viaggio
   da solo/a e il menu a tendina "✨ Altre idee di viaggio" con le altre
   scorciatoie (`QUICK_START_FEATURED` in `utils.py` decide quali restano fuori).
+  Poi la vetrina, per chi non vuole ancora rispondere a domande:
+  - **Dove andare a [mese]**: 8 mete per il mese corrente (o quello scelto
+    con i pulsanti dei mesi), da `catalog.month_picks` — solo mete per cui è
+    un mese migliore, prima le più stagionali, alternando le zone del mondo.
+  - **Che viaggio cerchi?** (8 stili, `MOOD_SHOWCASE`) ed **Esplora per zona**
+    (`ZONE_SHOWCASE`): ogni tessera apre Esplora con quel filtro.
+  - **Come funziona** in 3 passi, una striscia di fiducia (numero di mete,
+    luoghi curati, niente sponsor, `DATA_REVIEWED`) e le **domande frequenti**.
+  Le tessere sono foto con un pulsante Streamlit invisibile steso sopra: tutta
+  la foto è cliccabile senza ricaricare l'app. Su telefono ogni riga diventa
+  una fila da scorrere col dito. Usano la foto a 500 px (`Photo.tile`).
+- **Esplora** (`stage = "explore"`, anche dalla sidebar): tutte le mete con
+  filtri per mese, stile, zona, budget e durata, ordinate "di stagione" o per
+  prezzo, 12 alla volta. I filtri restano salvati in `ex_filters` quando si
+  apre una meta e si torna indietro (Streamlit cancellerebbe lo stato dei
+  widget non disegnati).
 - **Questionario**: 8 domande in card distinte e numerate ("Domanda X di 8"),
   dentro un unico form (non un wizard multi-step).
 - **Risultati**: vista compatta di default — pro/contro, breakdown costi,
-  timeline e checklist dietro expander; prima cosa visibile è match % +
-  "Da X €".
+  timeline e checklist dietro expander; prima cosa visibile è la foto della
+  meta con match % e poi "Da X €". I viaggi combinati mostrano una striscia
+  con le foto delle tappe.
+- **Pagina meta** (`stage = "destination"`): foto grande, numeri chiave
+  (costo, durata, volo, periodo migliore), itinerario già aperto, riquadro di
+  condivisione e lo stesso dettaglio delle card. Ci si arriva da un link o dal
+  pulsante "Apri la pagina della meta" di ogni card; "Indietro" riporta da
+  dove si era partiti. Chi arriva da un link senza aver fatto il questionario
+  vede un invito a farlo al posto del match.
+- **Foto**: Wikimedia Commons, scelte a mano e verificate, 1280 px per la
+  pagina e 960 px per le card, come sfondo CSS con un gradiente sotto (se non
+  si caricano non si vede un'immagine rotta). Autore e licenza sono sempre
+  visibili sulla foto, con link alla pagina Commons.
 - Card individuate via un marcatore invisibile (`span` con classe dedicata,
   primo figlio del container) anziché le classi auto-generate di Streamlit,
   che cambiano hash a ogni build.
@@ -518,6 +601,15 @@ calcolano da soli — non serve autorarli. Nessuna modifica al motore:
 Per nuove combinazioni multi-tappa: aggiungi una rotta in `trip_routes.py`
 (`RAW_ROUTES`) — senza rotta autorata, il Trip Builder non le combinerà mai.
 Un trip template curato si aggiunge a `RAW_TRIP_TEMPLATES`.
+
+Per la vetrina (`catalog.py`): se una meta non va mostrata nella sezione
+del mese in alcuni periodi (nome o foto stagionali), una voce in
+`_SHOWCASE_ONLY_IN`. Una foto in `PHOTOS` con autore e licenza
+esatti della pagina Commons (obbligatori per CC BY / CC BY-SA), il paese in
+`_ZONE_BY_COUNTRY` se è nuovo e, se il nome è lungo o ha parentesi, uno slug
+in `_SLUG_OVERRIDES`. **Uno slug pubblicato non si cambia più**: i link già
+condivisi smetterebbero di funzionare. `build_slug_index` si ferma con un
+errore se due mete finiscono con lo stesso slug.
 
 ### Aggiungere i luoghi curati di una meta
 
@@ -564,3 +656,31 @@ generico. Regole imparate scrivendo le 79 esistenti:
   server finirebbe sovrascritto a ogni utente.
 - Filtro di facilità organizzativa (§7): se azzera i risultati viene
   ignorato invece di mostrare una pagina vuota.
+- **Rete di sicurezza** (`safe_block` / `safe_render` in `app.py`): se una
+  scheda o una sezione si rompe, al suo posto compare un avviso gentile e il
+  resto della pagina funziona; se si rompe una pagina intera, una pagina di
+  errore con "Torna alla home" (`render_error_page`). L'errore finisce nei
+  log (Manage app → Logs). Con la variabile d'ambiente
+  `TRAVELMATCH_STRICT=1` gli errori riemergono: serve ai test automatici.
+  `st.rerun()` e `st.stop()` non vengono intercettati (sono BaseException).
+- **Ricerche salvate** caricate da file: `_sanitize_saved_prefs` ricostruisce
+  le preferenze campo per campo, tenendo solo chiavi note con valori validi.
+  Un file vecchio, ritoccato a mano o non JSON dà un messaggio, mai un errore.
+- **Itinerari lunghi**: quando il viaggio supera la somma dei `max_nights`
+  delle basi (13 giorni a Bali con due basi da 6 notti), la notte in più va
+  alla base principale. Prima andava persa e l'itinerario usciva con un giorno
+  in meno di quelli richiesti (Bali, L'Avana, Città del Capo).
+- **Commenti e segnalazioni**: `FEEDBACK_URL` in `app.py`. Se è vuoto il link
+  non compare; con l'indirizzo di un modulo (es. Modulo Google) compare in
+  fondo a home, risultati, pagina meta, Esplora, nella sidebar e nella pagina
+  di errore.
+- **Link rotti o manomessi** (`?meta=pippo`, `&giorni=99`, testo a caso)
+  non causano mai errori: meta sconosciuta → home con un avviso; durata
+  inesistente → itinerario standard. Maiuscole, spazi e accenti nello slug
+  vengono normalizzati (`?meta=Città del Capo` funziona).
+- Merzouga (Sahara) aveva volo a 0 € e 0 ore: risultava "da 120 €" e passava
+  il filtro dei voli brevi. Ora ha il volo su Marrakech più il trasferimento
+  su strada (130-350 €, ~3h10 di volo).
+- La sorpresa di "🎲 Sorprendimi" viene scelta una volta sola: prima veniva
+  ripescata a ogni clic, e cambiare la durata dell'itinerario la sostituiva
+  con un'altra meta.

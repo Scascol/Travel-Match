@@ -138,13 +138,34 @@ AREA_TO_REGIONS = {
 
 NORTH_AFRICA_COUNTRIES = {"Marocco"}
 
-# "Altro / Indifferente" = nessuna preferenza sulla città di partenza: le
-# stime restano quelle generiche del dataset (vedi travel_estimates.py).
+# Città di partenza: da qui travel_estimates.py calcola tempi e costi porta a
+# porta di aereo, treno, auto e traghetto. "Altro" = nessuna città: restano
+# le stime generiche di volo del dataset.
 DEPARTURE_CITY_OPTIONS = {
-    "milano": "🛫 Milano",
-    "roma": "🛫 Roma",
-    "altro": "🤷 Altro / Indifferente",
+    "milano": "Milano",
+    "bergamo": "Bergamo",
+    "roma": "Roma",
+    "altro": "Altro / non importa",
 }
+
+# Come si preferisce viaggiare. Treno e auto cambiano anche le mete proposte:
+# restano solo quelle raggiungibili così (vedi travel_estimates.keep_reachable).
+TRAVEL_MODE_OPTIONS = {
+    "best": "💡 Il più conveniente",
+    "plane": "✈️ Aereo",
+    "train": "🚆 Treno",
+    "car": "🚗 Auto",
+}
+
+# Mesi: abbreviati per le strisce e gli intervalli, per esteso nei titoli.
+MONTH_SHORT = ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"]
+MONTH_NAMES = [
+    "gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno",
+    "luglio", "agosto", "settembre", "ottobre", "novembre", "dicembre",
+]
+
+# Quante persone contano per dividere i costi dell'auto.
+PEOPLE_HEADCOUNT = {"Solo": 1, "Coppia": 2, "Amici": 4, "Famiglia": 4, "Gruppo": 6}
 
 DISTANCE_OPTIONS = {
     "2h": 2,
@@ -395,24 +416,16 @@ def flight_hours_label(hours: float) -> str:
     return f"{whole}h{minutes:02d}" if minutes else f"{whole}h"
 
 
-# Milano ha tre aeroporti (Malpensa/Linate/Bergamo): mostriamo solo il nome
-# città per non dichiarare un aeroporto specifico che l'utente non ha scelto.
-# Roma ha Fiumicino come riferimento standard per i voli internazionali.
-DEPARTURE_AIRPORT_CODES = {"roma": "FCO"}
-
-
-def flight_duration_label(hours: float, departure_city: str | None) -> str:
-    """Durata di volo pronta per la UI, con città/aeroporto di partenza se
-    l'utente l'ha scelta (vedi DEPARTURE_CITY_OPTIONS). "Altro/Indifferente"
-    o nessuna scelta -> solo la durata generica, senza dichiarare una
-    partenza che l'utente non ha specificato."""
-    duration = flight_hours_label(hours)
-    if not departure_city or departure_city not in DEPARTURE_CITY_OPTIONS or departure_city == "altro":
-        return f"{duration} di volo"
-    city_label = DEPARTURE_CITY_OPTIONS[departure_city].split(" ", 1)[-1]
-    code = DEPARTURE_AIRPORT_CODES.get(departure_city)
-    origin = f"{city_label} ({code})" if code else city_label
-    return f"Volo da {origin} · {duration}"
+def match_score_or_none(row: Any) -> float | None:
+    """Il punteggio di match esiste solo dopo una ricerca: chi apre una meta
+    da un link condiviso non ce l'ha, ed export e card social non devono
+    rompersi per questo."""
+    value = row.get("match_score") if hasattr(row, "get") else None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if value != value else value  # NaN
 
 
 def medal_for_rank(rank: int) -> str:

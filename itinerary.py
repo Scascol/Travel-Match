@@ -610,7 +610,11 @@ def _allocate_nights(bases: list[dict[str, Any]], n_days: int) -> list[str]:
             pool = [b for b in hosts
                     if b["key"] in alloc and alloc[b["key"]] < b.get("max_nights", n_days)]
             if not pool:
-                break
+                # Tutte le basi sono al loro tetto ma il viaggio è più lungo
+                # (13 giorni a Bali con due basi da 6): la notte in più va
+                # alla base principale. Prima si perdeva, e l'itinerario
+                # usciva con un giorno in meno di quelli chiesti.
+                pool = [b for b in hosts if b["key"] in alloc]
             alloc[max(pool, key=lambda b: b["night_weight"])["key"]] += 1
         else:
             pool = [b for b in hosts if b["key"] in alloc and alloc[b["key"]] > 1]

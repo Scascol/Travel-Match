@@ -16,9 +16,9 @@ e per stile continuano a uscire da sole invece di essere scritte a mano.
 
 COPERTURA
 ---------
-Modulo pilota: per ora la sola Creta (id 36). Le mete non coperte usano il
-motore generico di prima — `has_curated_places()` decide, e non c'e' nessun
-degrado per le altre 78.
+Tutte le 79 mete (911 luoghi, 102 basi). Una meta senza voce qui continua a
+funzionare: `curated_entry()` restituisce None e l'itinerario ricade sul
+motore generico, senza errori.
 
 REGOLE PER AGGIUNGERE UNA META
 ------------------------------
@@ -5959,15 +5959,6 @@ CURATED: dict[int, dict[str, Any]] = {
         ],
     },
 }
-
-
-def has_curated_places(dest_id: Any) -> bool:
-    """True se la meta ha contenuto curato e puo' avere itinerari con nomi
-    propri. Le altre restano sul motore generico."""
-    try:
-        return int(dest_id) in CURATED
-    except (TypeError, ValueError):
-        return False
 
 
 def curated_entry(dest_id: Any) -> dict[str, Any] | None:

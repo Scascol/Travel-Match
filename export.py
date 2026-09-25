@@ -19,10 +19,11 @@ recommender.py/trip_builder.py.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any
 
 from trip_presentation import export_trip_as_text, format_cost_scenarios_lines
-from utils import budget_warning_for_range, format_price, format_price_range
+from utils import budget_warning_for_range, format_price, format_price_range, match_score_or_none
 
 try:
     from reportlab.lib import colors
@@ -101,15 +102,18 @@ def _pdf_display_text(line: str) -> str:
     return " ".join(text.split())
 
 
-def export_destination_as_text(row: Any, budget_max: float | None = None) -> str:
+def export_destination_as_text(row: Any, budget_max: float | None = None, share_url: str | None = None) -> str:
     """Riepilogo testuale di una destinazione singola, nello stesso stile
     "pronto da incollare" dell'export dei viaggi combinati (vedi
     trip_presentation.export_trip_as_text)."""
-    lines = [
-        f"📍 {row['name']}, {row['country']}",
-        f"Match: {row['match_score']:.0f}%",
-        "",
-        row.get("explanation", ""),
+    score = match_score_or_none(row)
+    lines = [f"📍 {row['name']}, {row['country']}"]
+    if score is not None:
+        lines.append(f"Match: {score:.0f}%")
+    explanation = row.get("explanation", "") or ""
+    if explanation:
+        lines += ["", explanation]
+    lines += [
         "",
         f"🗓️ Durata consigliata: {row['days_min']}-{row['days_max']} giorni",
         "",
@@ -127,12 +131,15 @@ def export_destination_as_text(row: Any, budget_max: float | None = None) -> str
         lines.append("⭐ ESPERIENZE WOW")
         lines.extend(f"- {w}" for w in wow)
 
+    if share_url:
+        lines.append("")
+        lines.append(f"🔗 Scheda completa e itinerario: {share_url}")
     lines.append("")
     lines.append("— Generato con TravelMatch ✈️")
     return "\n".join(lines)
 
 
-def export_destination_as_stories(row: Any) -> str:
+def export_destination_as_stories(row: Any, share_url: str | None = None) -> str:
     """Versione "stories": pochissime righe, molto spazio, pensata per essere
     incollata su una storia Instagram/WhatsApp Status invece che letta.
 
@@ -141,18 +148,15 @@ def export_destination_as_stories(row: Any) -> str:
     un'immagine): qui il testo È il contenuto, quindi va tenuto cortissimo
     e spezzato in blocchi che reggono su schermo verticale."""
     cost = row.get("seasonal_cost_min", row["total_cost_min"])
-    blocks = [
-        f"✈️ {row['name'].upper()}",
-        f"{row['country']}",
-        "",
-        f"{row['match_score']:.0f}% match",
-        f"da {format_price(cost)}",
-        f"{row['days_min']}-{row['days_max']} giorni",
-    ]
+    score = match_score_or_none(row)
+    blocks = [f"✈️ {row['name'].upper()}", f"{row['country']}", ""]
+    if score is not None:
+        blocks.append(f"{score:.0f}% match")
+    blocks += [f"da {format_price(cost)}", f"{row['days_min']}-{row['days_max']} giorni"]
     wow = list(row.get("wow_experiences", []))
     if wow:
         blocks += ["", f"⭐ {wow[0]}"]
-    blocks += ["", "TravelMatch ✈️"]
+    blocks += ["", share_url or "TravelMatch ✈️"]
     return "\n".join(blocks)
 
 
@@ -173,6 +177,9 @@ def _escape_pdf_text(line: str) -> str:
     return line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# Cache: stesso input, stesso file. La pagina risultati rigenerava immagini e
+# PDF di ogni scheda a ogni clic, anche con l'expander Esporta chiuso.
+@lru_cache(maxsize=256)
 def build_pdf_bytes(title: str, body_text: str) -> bytes | None:
     """PDF ordinato e piacevole da leggere a partire dal testo già
     formattato — stesso identico contenuto dell'export testo (nessuna

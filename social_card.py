@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import io
 import os
+from functools import lru_cache
 from typing import Any
 
-from utils import format_price
+from utils import format_price, match_score_or_none
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -86,7 +87,10 @@ def _wrap_text(text: str, font, draw, max_width: int) -> list[str]:
     return lines
 
 
-def build_social_card_image(title: str, subtitle: str, match_score: float, highlight: str, cost_line: str) -> bytes | None:
+# Cache: stesso input, stesso file. La pagina risultati rigenerava immagini e
+# PDF di ogni scheda a ogni clic, anche con l'expander Esporta chiuso.
+@lru_cache(maxsize=256)
+def build_social_card_image(title: str, subtitle: str, match_score: float | None, highlight: str, cost_line: str) -> bytes | None:
     """PNG verticale 1080x1350. None se Pillow non è disponibile o se il
     disegno fallisce per qualunque motivo (font di sistema mancanti, ecc.)."""
     if not _PIL_AVAILABLE:
@@ -104,7 +108,9 @@ def build_social_card_image(title: str, subtitle: str, match_score: float, highl
 
         margin = 80
 
-        badge_text = f"{match_score:.0f}% MATCH"
+        # Senza una ricerca alle spalle (meta aperta da un link) non c'è un
+        # match da vantare: il badge diventa un semplice invito.
+        badge_text = f"{match_score:.0f}% MATCH" if match_score is not None else "IDEA DI VIAGGIO"
         badge_w = draw.textlength(badge_text, font=font_badge) + 60
         draw.rounded_rectangle([margin, 90, margin + badge_w, 160], radius=35, fill=WHITE)
         draw.text((margin + 30, 105), badge_text, font=font_badge, fill=ACCENT_DARK)
@@ -149,7 +155,7 @@ def destination_social_card_image(row: Any) -> bytes | None:
     cost_line = f"Da {format_price(row['total_cost_min'])} a persona"
     return build_social_card_image(
         title=row["name"], subtitle=f"{row['country']} · {row['region']}",
-        match_score=row["match_score"], highlight=highlight, cost_line=cost_line,
+        match_score=match_score_or_none(row), highlight=highlight, cost_line=cost_line,
     )
 
 
@@ -164,13 +170,19 @@ def trip_social_card_image(trip: dict[str, Any]) -> bytes | None:
     )
 
 
-def destination_social_caption(row: Any) -> str:
+def destination_social_caption(row: Any, share_url: str | None = None) -> str:
     wow = _first_wow(list(row.get("wow_experiences", [])))
+    score = match_score_or_none(row)
+    hook = (
+        f"{score:.0f}% di match con quello che cercavo ✨" if score is not None
+        else "Nella lista dei miei prossimi viaggi ✨"
+    )
+    closing = f"Scheda e itinerario: {share_url}" if share_url else "Scoperta con TravelMatch ✈️"
     return (
         f"📍 {row['name']}, {row['country']}\n"
-        f"{row['match_score']:.0f}% di match con quello che cercavo ✨\n"
+        f"{hook}\n"
         f"{wow}\n"
-        f"Scoperta con TravelMatch ✈️"
+        f"{closing}"
     )
 
 

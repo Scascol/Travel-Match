@@ -19,7 +19,7 @@ from typing import Any
 
 import pandas as pd
 
-from utils import CHRISTMAS_PERIODS, budget_warning_for_range, flight_hours_label
+from utils import CHRISTMAS_PERIODS, MONTH_SHORT, budget_warning_for_range, flight_hours_label
 
 # ---------------------------------------------------------------------------
 # Travel Style — il "carattere" della meta/dell'itinerario secondo i punteggi
@@ -450,16 +450,12 @@ def emotional_takeaways(row: Any, n: int = 3) -> list[str]:
 # Stagionalità visuale — quanto il periodo scelto è quello giusto per la meta.
 # ---------------------------------------------------------------------------
 
-_MONTH_LABELS = ["gen", "feb", "mar", "apr", "mag", "giu",
-                 "lug", "ago", "set", "ott", "nov", "dic"]
-
-
 def seasonality_months(row: Any) -> list[dict[str, Any]]:
     """I 12 mesi con l'indicazione se sono tra i `best_months` della meta:
     la UI può renderli come una striscia, molto più leggibile di un elenco."""
     best = set(row.get("best_months", []))
     return [{"label": label, "month": i + 1, "is_best": (i + 1) in best}
-            for i, label in enumerate(_MONTH_LABELS)]
+            for i, label in enumerate(MONTH_SHORT)]
 
 
 def seasonality_note(row: Any, requested: list[int] | None) -> str | None:
@@ -469,7 +465,7 @@ def seasonality_note(row: Any, requested: list[int] | None) -> str | None:
     best = set(row.get("best_months", []))
     if not best:
         return None
-    best_labels = ", ".join(_MONTH_LABELS[m - 1] for m in sorted(best))
+    best_labels = ", ".join(MONTH_SHORT[m - 1] for m in sorted(best))
     if not requested:
         return f"📅 Periodo migliore per andarci: {best_labels}."
     overlap = best & set(requested)
@@ -574,7 +570,7 @@ def narrative_explanation(
 
 _DESTINATION_REASON_PHRASES = {
     "budget": "il costo stimato è un po' sopra il tuo budget",
-    "distanza di volo": "il volo è più lungo di quanto preferisci",
+    "tempo di viaggio": "ci vuole più tempo ad arrivarci di quanto preferisci",
     "durata": "la durata ideale non combacia bene con i giorni che hai a disposizione",
     "periodo": "non è il periodo migliore dell'anno per andarci",
 }
@@ -653,7 +649,8 @@ def accessible_alternatives(
     # il problema era la distanza.
     cheaper = pool[cost_field] <= ref_cost * 0.85
     if max_flight_hours and max_flight_hours < 999:
-        closer = pool["flight_hours"] <= max_flight_hours
+        hours_col = "travel_hours" if "travel_hours" in pool.columns else "flight_hours"
+        closer = pool[hours_col] <= max_flight_hours
         pool = pool[cheaper | closer]
     else:
         pool = pool[cheaper]
@@ -670,8 +667,8 @@ def accessible_alternatives(
         saving = ref_cost - alt[cost_field]
         if saving >= 50:
             why = f"costa circa {int(round(saving, -1))} € in meno"
-        elif alt["flight_hours"] < row.get("flight_hours", 99):
-            why = f"il volo è più corto ({flight_hours_label(alt['flight_hours'])})"
+        elif alt.get("travel_hours", alt["flight_hours"]) < row.get("travel_hours", row.get("flight_hours", 99)):
+            why = f"ci si arriva prima ({flight_hours_label(alt.get('travel_hours', alt['flight_hours']))})"
         else:
             why = "è più facile da incastrare con i tuoi vincoli"
         lines.append(

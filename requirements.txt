@@ -1,4 +1,8 @@
-streamlit>=1.40
-pandas>=2.0
-reportlab>=4.0
-Pillow>=10.0
+# Versioni bloccate: sono quelle con cui l'app è stata provata. Senza, Streamlit
+# Cloud installa le più recenti e l'app online può comportarsi diversamente da
+# quella in locale. Richiede Python 3.11 o superiore (pandas 3).
+# Per aggiornarle: cambiare il numero qui, riprovare tutto in locale, caricare.
+streamlit==1.58.0
+pandas==3.0.3
+reportlab==5.0.1
+Pillow==12.2.0

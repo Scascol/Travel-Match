@@ -302,12 +302,20 @@ def _comfort_match(row, comfort_key: str | None) -> float:
     return max(0.0, 100.0 - diff * 22.0)
 
 
+def travel_hours(row) -> float:
+    """Ore di viaggio col mezzo scelto (travel_estimates.apply_travel): in
+    treno o in auto sono quelle, non le ore di un volo che non si prende.
+    Senza città di partenza resta la durata del volo generico."""
+    value = row.get("travel_hours") if hasattr(row, "get") else None
+    return float(row["flight_hours"]) if value is None or value != value else float(value)
+
+
 def _distance_match(row, max_flight_hours: float | None) -> float:
     if not max_flight_hours or max_flight_hours >= 999:
         return 100.0
-    if row["flight_hours"] <= max_flight_hours:
+    if travel_hours(row) <= max_flight_hours:
         return 100.0
-    return max(0.0, 100.0 - (row["flight_hours"] - max_flight_hours) * 18.0)
+    return max(0.0, 100.0 - (travel_hours(row) - max_flight_hours) * 18.0)
 
 
 COMPONENT_LABELS = {
@@ -318,7 +326,7 @@ COMPONENT_LABELS = {
     "duration": "la durata del viaggio",
     "social": "la socialità che cerchi",
     "comfort": "il livello di comfort",
-    "distance": "la distanza di volo preferita",
+    "distance": "la distanza che preferisci",
     "pace": "il ritmo di viaggio che cerchi",
     "romantic": "l'atmosfera romantica",
     "adventure": "la voglia di avventura",
@@ -409,8 +417,8 @@ def _meets_strict_criteria(row, prefs: dict[str, Any]) -> tuple[bool, list[str]]
         reasons.append("budget")
 
     max_flight_hours = prefs.get("max_flight_hours")
-    if max_flight_hours and max_flight_hours < 999 and row["flight_hours"] > max_flight_hours:
-        reasons.append("distanza di volo")
+    if max_flight_hours and max_flight_hours < 999 and travel_hours(row) > max_flight_hours:
+        reasons.append("tempo di viaggio")
 
     days_min, days_max = prefs.get("duration_range", (None, None))
     if days_min and days_max:

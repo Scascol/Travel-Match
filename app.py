@@ -13,8 +13,13 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import functools
+import html
 import json
+import logging
 import math
+import os
+from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
@@ -39,6 +44,24 @@ from trip_builder import (
     get_default_trip_weights,
     get_top_trips,
     surprise_trip,
+)
+from catalog import (
+    BUDGET_FILTERS,
+    DATA_REVIEWED,
+    DURATION_FILTERS,
+    MOOD_SHOWCASE,
+    ZONE_SHOWCASE,
+    ZONES,
+    build_slug_index,
+    explore,
+    month_picks,
+    months_label,
+    normalize_slug,
+    one_liner,
+    photo_for,
+    place_label,
+    slug_for,
+    zone_for,
 )
 from checklist import build_destination_checklist, build_trip_checklist
 from export import (
@@ -85,7 +108,16 @@ from social_card import (
     trip_social_card_image,
     trip_social_caption,
 )
-from travel_estimates import adjust_destinations_for_departure, estimate_alternative_transports
+from travel_estimates import (
+    COORDS,
+    DEPARTURES,
+    MODES,
+    apply_travel,
+    distance_km,
+    keep_reachable,
+    travel_label,
+    travel_options,
+)
 from trip_presentation import generate_timeline_segments, generate_trip_explanation
 from utils import (
     AREA_OPTIONS,
@@ -97,15 +129,18 @@ from utils import (
     DISTANCE_OPTIONS,
     DURATION_BANDS,
     INTENSITY_OPTIONS,
+    MONTH_NAMES,
     MOOD_OPTIONS,
     PACE_DESCRIPTIONS,
     PACE_LABELS,
+    PEOPLE_HEADCOUNT,
     PEOPLE_OPTIONS,
     PERIOD_OPTIONS,
     QUICK_START_FEATURED,
     QUICK_START_OPTIONS,
     REFINEMENT_ACTIONS,
     SOCIAL_PREFERENCE_OPTIONS,
+    TRAVEL_MODE_OPTIONS,
     TRAVELLER_MODE_BY_PEOPLE,
     TRAVELLER_MODE_LABELS,
     TRAVELLER_STAY_HINTS,
@@ -113,7 +148,6 @@ from utils import (
     compute_travel_dna,
     cost_scenarios,
     ease_stars,
-    flight_duration_label,
     flight_hours_label,
     format_price,
     format_price_range,
@@ -133,7 +167,60 @@ st.set_page_config(
     initial_sidebar_state="auto",
 )
 
-PEOPLE_HEADCOUNT = {"Solo": 1, "Coppia": 2, "Amici": 4, "Famiglia": 4, "Gruppo": 6}
+# Indirizzo pubblico usato nei link condivisibili. Va aggiornato qui se
+# l'app cambia sottodominio su Streamlit Cloud (o passa a un dominio proprio).
+PUBLIC_APP_URL = "https://mytravelmatch.streamlit.app"
+
+# Modulo per i commenti e le segnalazioni (es. un Modulo Google). Finché è
+# vuoto il link "Dicci cosa ne pensi" non compare da nessuna parte.
+FEEDBACK_URL = ""
+
+
+# ---------------------------------------------------------------------------
+# Rete di sicurezza
+# ---------------------------------------------------------------------------
+# Se una scheda o una sezione si rompe (un dato imprevisto, un caso limite),
+# chi usa l'app vede un avviso gentile al suo posto e il resto della pagina
+# continua a funzionare, invece del riquadro rosso con il codice Python.
+# L'errore finisce comunque nei log (Manage app -> Logs su Streamlit Cloud).
+# Con TRAVELMATCH_STRICT=1 (solo nei test) gli errori riemergono, così i
+# test automatici li vedono invece di passarci sopra.
+# Nota: st.rerun()/st.stop() usano eccezioni che derivano da BaseException,
+# quindi `except Exception` non le intercetta.
+
+_log = logging.getLogger("travelmatch")
+_STRICT = os.environ.get("TRAVELMATCH_STRICT") == "1"
+
+
+@contextlib.contextmanager
+def safe_block(what: str):
+    try:
+        yield
+    except Exception:
+        if _STRICT:
+            raise
+        _log.exception("Errore mostrando %s", what)
+        st.warning(
+            f"Non siamo riusciti a mostrare {what}. Il resto della pagina funziona; "
+            "se il problema si ripete, ricarica la pagina.",
+            icon="⚠️",
+        )
+
+
+def safe_render(what):
+    """Decoratore: `what` è un testo o una funzione che lo costruisce dagli
+    stessi argomenti (es. il nome della meta)."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                label = what(*args, **kwargs) if callable(what) else what
+            except Exception:
+                label = "questa sezione"
+            with safe_block(label):
+                return fn(*args, **kwargs)
+        return wrapper
+    return decorator
 
 
 # ---------------------------------------------------------------------------
@@ -1182,6 +1269,327 @@ def inject_css() -> None:
             margin-bottom: 0.4rem;
             font-size: 0.92rem;
         }}
+
+        /* --- Foto: testata delle card e della pagina meta ---------------- */
+        .tm-photo-head, .tm-photo-hero {{
+            position: relative;
+            background-size: cover;
+            background-position: center;
+            border-radius: 14px;
+            overflow: hidden;
+            display: flex;
+            align-items: flex-end;
+            animation: tm-photo-in 0.5s ease-out both;
+        }}
+        .tm-photo-head {{ min-height: 210px; margin-bottom: 0.6rem; }}
+        .tm-photo-hero {{ min-height: 380px; margin: 0.4rem 0 1rem; border-radius: 18px; }}
+        @keyframes tm-photo-in {{
+            from {{ opacity: 0; transform: translateY(6px); }}
+            to {{ opacity: 1; transform: none; }}
+        }}
+        .tm-photo-text {{ padding: 1.1rem 1.3rem 1rem; width: 100%; }}
+        .tm-photo-hero .tm-photo-text {{ padding: 1.8rem 2rem 1.6rem; }}
+        p.tm-photo-title {{
+            font-family: {display_font};
+            font-weight: 800;
+            font-size: 1.55rem;
+            letter-spacing: -0.01em;
+            color: #FFFFFF !important;
+            margin: 0;
+            line-height: 1.15;
+            text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+        }}
+        .tm-photo-hero p.tm-photo-title {{ font-size: 2.7rem; }}
+        p.tm-photo-sub {{
+            color: rgba(255, 255, 255, 0.92) !important;
+            font-size: 0.98rem;
+            margin: 0.25rem 0 0;
+            text-shadow: 0 1px 8px rgba(0, 0, 0, 0.35);
+        }}
+        .tm-photo-corner {{ position: absolute; top: 0.9rem; right: 0.9rem; }}
+        a.tm-photo-credit {{
+            position: absolute;
+            top: 0.7rem;
+            left: 0.8rem;
+            max-width: 55%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-size: 0.68rem;
+            color: rgba(255, 255, 255, 0.9) !important;
+            background: rgba(13, 27, 75, 0.35);
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            text-decoration: none !important;
+        }}
+        a.tm-photo-credit:hover {{ background: rgba(13, 27, 75, 0.6); }}
+        .tm-trip-strip {{
+            display: flex;
+            gap: 6px;
+            height: 150px;
+            border-radius: 14px;
+            overflow: hidden;
+            margin-bottom: 0.25rem;
+            animation: tm-photo-in 0.5s ease-out both;
+        }}
+        .tm-trip-tile {{ flex: 1; background-size: cover; background-position: center; }}
+        p.tm-trip-credit {{
+            font-size: 0.68rem;
+            color: {ink_muted};
+            margin: 0 0 0.6rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        @media (max-width: 640px) {{
+            .tm-photo-head {{ min-height: 170px; }}
+            .tm-photo-hero {{ min-height: 260px; }}
+            .tm-photo-hero p.tm-photo-title {{ font-size: 1.9rem; }}
+            .tm-photo-hero .tm-photo-text {{ padding: 1.2rem 1.2rem 1.1rem; }}
+            .tm-trip-strip {{ height: 110px; }}
+        }}
+        @media (prefers-reduced-motion: reduce) {{
+            .tm-photo-head, .tm-photo-hero, .tm-trip-strip {{ animation: none; }}
+        }}
+
+        /* --- Vetrina: sezioni della home ------------------------------- */
+        .tm-home-head {{ margin: 3.4rem 0 1rem; }}
+        .tm-home-head h3 {{
+            font-family: {display_font};
+            font-size: 1.65rem;
+            font-weight: 800;
+            letter-spacing: -0.01em;
+            color: {ink};
+            margin: 0 0 0.25rem;
+            padding: 0;
+        }}
+        .tm-home-head p {{ color: {ink_muted}; margin: 0; font-size: 1rem; }}
+
+        /* --- Tessere fotografiche ---------------------------------------- */
+        .tm-tile {{
+            position: relative;
+            height: 230px;
+            border-radius: 16px;
+            overflow: hidden;
+            background: {_PHOTO_FALLBACK};
+            box-shadow: 0 10px 24px -14px rgba(26, 35, 126, 0.45);
+            transition: box-shadow 0.25s ease, transform 0.25s ease;
+            animation: tm-photo-in 0.5s ease-out both;
+        }}
+        .tm-tile-3 {{ height: 250px; }}
+        .tm-tile img {{
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            object-fit: cover;
+            transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+        }}
+        .tm-tile-veil {{ position: absolute; inset: 0; background: {_PHOTO_VEIL}; }}
+        .tm-tile-text {{ position: absolute; left: 0; right: 0; bottom: 0; padding: 0.9rem 1rem; }}
+        p.tm-tile-title {{
+            font-family: {display_font};
+            font-weight: 800;
+            font-size: 1.2rem;
+            line-height: 1.2;
+            color: #FFFFFF !important;
+            margin: 0;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+        }}
+        p.tm-tile-sub {{
+            color: rgba(255, 255, 255, 0.92) !important;
+            font-size: 0.86rem;
+            margin: 0.2rem 0 0;
+            text-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+        }}
+        .tm-tile-badge {{
+            position: absolute; top: 0.7rem; right: 0.7rem;
+            background: rgba(255, 255, 255, 0.92);
+            color: {ink};
+            font-size: 0.75rem;
+            font-weight: 700;
+            padding: 0.2rem 0.6rem;
+            border-radius: 999px;
+        }}
+        .tm-tile-credit {{
+            position: absolute; top: 0.75rem; left: 0.75rem;
+            max-width: 60%;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            font-size: 0.6rem;
+            color: rgba(255, 255, 255, 0.85);
+            background: rgba(13, 27, 75, 0.3);
+            padding: 0.1rem 0.45rem;
+            border-radius: 999px;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }}
+        /* Il blocco che contiene una tessera diventa il riferimento per il
+        pulsante invisibile, che si stende su tutta la foto. */
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] .tm-tile) {{
+            position: relative;
+            gap: 0 !important;
+        }}
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] .tm-tile)
+            > div[data-testid="stElementContainer"]:has(button) {{
+            position: absolute; inset: 0; z-index: 3; margin: 0;
+        }}
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] .tm-tile)
+            > div[data-testid="stElementContainer"]:has(button) * {{
+            width: 100% !important; height: 100% !important;
+        }}
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] .tm-tile) button {{
+            opacity: 0;
+            border-radius: 16px;
+            cursor: pointer;
+        }}
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] .tm-tile) button:focus-visible {{
+            opacity: 1;
+            background: transparent !important;
+            color: transparent !important;
+            border: 3px solid {accent} !important;
+        }}
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] .tm-tile):hover .tm-tile {{
+            transform: translateY(-3px);
+            box-shadow: 0 18px 32px -16px rgba(26, 35, 126, 0.55);
+        }}
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] .tm-tile):hover .tm-tile img {{
+            transform: scale(1.06);
+        }}
+        div[data-testid="stVerticalBlock"]:has(> div[data-testid="stElementContainer"] .tm-tile):hover .tm-tile-credit {{
+            opacity: 1;
+        }}
+        /* Righe di tessere: una sola riga di colonne che il CSS manda a capo
+        (4 o 3 per riga su desktop). */
+        div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .tm-tile) {{
+            flex-wrap: wrap !important;
+            row-gap: 1rem;
+        }}
+        div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .tm-tile-4) > div[data-testid="stColumn"] {{
+            flex: 0 0 calc(25% - 0.75rem) !important;
+            width: calc(25% - 0.75rem) !important;
+            min-width: 0 !important;
+        }}
+        div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .tm-tile-3) > div[data-testid="stColumn"],
+        div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .tm-tile-g) > div[data-testid="stColumn"] {{
+            flex: 0 0 calc(33.333% - 0.667rem) !important;
+            width: calc(33.333% - 0.667rem) !important;
+            min-width: 0 !important;
+        }}
+        @media (max-width: 900px) and (min-width: 641px) {{
+            div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .tm-tile-4) > div[data-testid="stColumn"] {{
+                flex: 0 0 calc(50% - 0.5rem) !important;
+                width: calc(50% - 0.5rem) !important;
+            }}
+        }}
+        /* Telefono: la vetrina diventa una fila da scorrere col dito (con
+        la tessera successiva che si intravede, per far capire che c'è
+        altro); la griglia di Esplora invece resta una colonna. */
+        @media (max-width: 640px) {{
+            div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .tm-tile-4),
+            div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .tm-tile-3) {{
+                flex-wrap: nowrap !important;
+                overflow-x: auto;
+                scroll-snap-type: x mandatory;
+                padding-bottom: 0.4rem;
+                gap: 0.75rem !important;
+            }}
+            div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .tm-tile-4) > div[data-testid="stColumn"],
+            div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .tm-tile-3) > div[data-testid="stColumn"] {{
+                flex: 0 0 74% !important;
+                width: 74% !important;
+                scroll-snap-align: start;
+            }}
+            div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .tm-tile-g) > div[data-testid="stColumn"] {{
+                flex: 0 0 100% !important;
+                width: 100% !important;
+            }}
+            .tm-tile {{ height: 200px; }}
+            .tm-tile-credit {{ opacity: 1; }}
+            /* I 12 mesi su una fila da scorrere, invece di cinque righe. */
+            .st-key-home_month_w div[data-testid="stButtonGroup"] > div {{
+                flex-wrap: nowrap !important;
+                overflow-x: auto;
+                padding-bottom: 0.3rem;
+            }}
+            .st-key-home_month_w button {{ flex-shrink: 0; }}
+            .tm-home-head {{ margin-top: 2.6rem; }}
+        }}
+        @media (prefers-reduced-motion: reduce) {{
+            .tm-tile, .tm-tile img {{ animation: none; transition: none; }}
+        }}
+
+        /* --- Come funziona + fiducia ------------------------------------ */
+        .tm-how {{
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+        }}
+        .tm-how-step {{
+            background: #FFFFFF;
+            border: 1px solid {line};
+            border-radius: 18px;
+            padding: 1.4rem 1.4rem 1.2rem;
+            box-shadow: 0 10px 24px -18px rgba(74, 144, 226, 0.5);
+        }}
+        .tm-how-n {{
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 2.1rem; height: 2.1rem;
+            border-radius: 999px;
+            background: linear-gradient(135deg, {primary} 0%, {accent} 100%);
+            color: #FFFFFF;
+            font-family: {display_font};
+            font-weight: 800;
+            margin-bottom: 0.7rem;
+        }}
+        p.tm-how-t {{ font-family: {display_font}; font-weight: 700; font-size: 1.05rem; color: {ink}; margin: 0 0 0.3rem; }}
+        p.tm-how-d {{ color: {ink_muted}; font-size: 0.93rem; margin: 0; line-height: 1.5; }}
+        .tm-trust {{
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 0.6rem 1.6rem;
+            margin: 1.4rem 0 0.4rem;
+            padding: 1rem 1.2rem;
+            border-radius: 14px;
+            background: {primary_light};
+            color: {ink};
+            font-size: 0.92rem;
+        }}
+        .tm-trust b {{ font-family: {display_font}; }}
+        p.tm-explore-count {{ font-size: 1.05rem; color: {ink_muted}; margin: 0.6rem 0 0; }}
+        p.tm-explore-count b {{ color: {ink}; font-family: {display_font}; font-size: 1.3rem; }}
+        @media (max-width: 640px) {{
+            .tm-how {{ grid-template-columns: 1fr; }}
+        }}
+
+        /* --- Come arrivarci: confronto tra i mezzi ----------------------- */
+        .tm-travel-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 0.8rem;
+            margin: 0.3rem 0 0.5rem;
+        }}
+        .tm-travel-card {{
+            background: #FFFFFF;
+            border: 1px solid {line_strong};
+            border-radius: 14px;
+            padding: 0.95rem 1.05rem 0.85rem;
+        }}
+        .tm-travel-best {{
+            border: 2px solid {accent};
+            box-shadow: 0 10px 22px -16px rgba(30, 136, 229, 0.7);
+        }}
+        .tm-travel-top {{ display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin-bottom: 0.45rem; }}
+        .tm-travel-mode {{ font-family: {display_font}; font-weight: 700; color: {ink}; margin-right: 0.2rem; }}
+        .tm-travel-tag {{
+            font-size: 0.7rem; font-weight: 700;
+            color: {accent}; background: {primary_light};
+            padding: 0.12rem 0.5rem; border-radius: 999px;
+        }}
+        p.tm-travel-time {{ font-family: {display_font}; font-weight: 800; font-size: 1.35rem; color: {ink}; margin: 0; }}
+        p.tm-travel-cost {{ font-weight: 700; color: {ink}; margin: 0.15rem 0 0; }}
+        p.tm-travel-time span, p.tm-travel-cost span {{
+            font-family: {body_font}; font-weight: 500; font-size: 0.8rem; color: {ink_muted};
+        }}
+        p.tm-travel-group {{ font-size: 0.85rem; color: {ink_muted}; margin: 0.1rem 0 0; }}
+        p.tm-travel-note {{ font-size: 0.82rem; color: {ink_muted}; margin: 0.5rem 0 0; line-height: 1.45; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -1235,7 +1643,9 @@ def reset_to_landing() -> None:
         "trip_favorites", "applied_trip_refinements", "surprise_trip_pick",
         "surprise_trip_exclude", "surprise_kind", "trip_compare_ids",
         "gift_revealed", "gift_pick", "results_view_mode", "destination_display_mode",
-        "first_solo_hint", "controlled_pick", "controlled_searched",
+        "first_solo_hint", "trip_mode_hint", "controlled_pick", "controlled_searched", "direct_pick",
+        "page_dest_id", "page_days", "page_return_stage",
+        "ex_filters", "ex_shown", "ex_signature",
     ] + [k for k in st.session_state if k.startswith("q_")]
     keys_to_clear += [k for k in st.session_state if k.startswith("cs_")]
     for key in keys_to_clear:
@@ -1246,6 +1656,135 @@ def reset_to_landing() -> None:
 
 def go(stage: str) -> None:
     st.session_state["stage"] = stage
+
+
+# ---------------------------------------------------------------------------
+# Pagina meta e link condivisibili
+# ---------------------------------------------------------------------------
+# Ogni meta ha una pagina tutta sua, raggiungibile da un link del tipo
+# ?meta=creta&giorni=5. Il link è l'unica cosa che l'app legge dall'indirizzo:
+# lo si interpreta una volta sola all'apertura della sessione, poi è lo stato
+# dell'app a comandare e l'indirizzo lo segue (vedi _sync_url).
+
+@st.cache_data(show_spinner=False)
+def _slug_index() -> dict[str, int]:
+    return build_slug_index(_cached_destinations())
+
+
+def open_destination_page(dest_id: int, days: int | None = None) -> None:
+    """Callback dei pulsanti "Apri la pagina": ricorda da dove si arriva,
+    così "Indietro" riporta esattamente lì (risultati, sorpresa, preferiti)."""
+    current = st.session_state.get("stage", "landing")
+    if current != "destination":
+        st.session_state["page_return_stage"] = current
+    st.session_state["page_dest_id"] = int(dest_id)
+    st.session_state["page_days"] = days
+    st.session_state["page_scroll_top"] = True
+    go("destination")
+
+
+# Pagine che hanno senso solo dopo una ricerca: chi è arrivato da un link
+# condiviso non ha risultati a cui tornare.
+_STAGES_NEEDING_RESULTS = {"results", "surprise_direct", "gift_surprise", "controlled_surprise", "my_trips"}
+
+
+def _page_return_target() -> str:
+    target = st.session_state.get("page_return_stage") or "landing"
+    if target in _STAGES_NEEDING_RESULTS and st.session_state.get("results_bundle") is None:
+        return "landing"
+    return target
+
+
+def leave_destination_page() -> None:
+    target = _page_return_target()
+    st.session_state["page_dest_id"] = None
+    go(target)
+
+
+# --- Esplora -----------------------------------------------------------------
+# I filtri vivono in "ex_filters" (stato normale) e non solo nei widget:
+# Streamlit cancella lo stato di un widget quando non viene disegnato, quindi
+# passando dalla pagina di una meta e tornando indietro i filtri sparirebbero.
+
+_EXPLORE_DEFAULTS = {"month": None, "mood": None, "zone": None, "budget": None, "days": None, "sort": "season"}
+_EXPLORE_PAGE = 12
+
+
+def open_explore(**filters) -> None:
+    st.session_state["ex_filters"] = {**_EXPLORE_DEFAULTS, **filters}
+    for key in list(st.session_state.keys()):
+        if isinstance(key, str) and key.startswith("exw_"):
+            del st.session_state[key]
+    st.session_state["ex_shown"] = _EXPLORE_PAGE
+    st.session_state["page_scroll_top"] = True
+    go("explore")
+
+
+def reset_explore_filters() -> None:
+    open_explore()
+
+
+def _route_from_url() -> None:
+    """Legge ?meta=...&giorni=... alla prima esecuzione della sessione. Un
+    link rotto o scritto male non deve mai rompere l'app: si finisce sulla
+    home con un avviso gentile."""
+    if st.session_state.get("_url_routed"):
+        return
+    st.session_state["_url_routed"] = True
+    raw = st.query_params.get("meta")
+    if not raw:
+        return
+    dest_id = _slug_index().get(normalize_slug(raw))
+    if dest_id is None:
+        st.session_state["url_notice"] = (
+            "Il link che hai aperto non corrisponde a nessuna meta (forse è stato copiato a metà). "
+            "Ti lasciamo sulla home: da qui trovi lo stesso tutte le mete."
+        )
+        st.query_params.clear()
+        return
+    days = None
+    raw_days = st.query_params.get("giorni")
+    if raw_days and str(raw_days).strip().isdigit():
+        days = int(str(raw_days).strip())
+    open_destination_page(dest_id, days)
+    st.session_state["page_return_stage"] = "landing"
+
+
+def _sync_url() -> None:
+    """L'indirizzo nel browser segue lo stato: sulla pagina meta mostra il
+    link di quella meta (così si può anche copiare dalla barra), altrove
+    torna pulito. Si scrive solo se cambia qualcosa, per non sporcare la
+    cronologia del browser a ogni clic."""
+    wanted: dict[str, str] = {}
+    if st.session_state.get("stage") == "destination" and st.session_state.get("page_dest_id") is not None:
+        df = _cached_destinations()
+        match = df[df["id"] == st.session_state["page_dest_id"]]
+        if not match.empty:
+            wanted["meta"] = slug_for(st.session_state["page_dest_id"], match.iloc[0]["name"])
+            if st.session_state.get("page_days"):
+                wanted["giorni"] = str(st.session_state["page_days"])
+    current = {k: st.query_params.get(k) for k in st.query_params}
+    if current != wanted:
+        st.query_params.from_dict(wanted)
+
+
+def _app_base_url() -> str:
+    """In locale il link punta al computer su cui gira l'app (per poterlo
+    provare), online sempre all'indirizzo pubblico."""
+    try:
+        host = st.context.headers.get("host", "") or ""
+    except Exception:
+        host = ""
+    if host.startswith(("localhost", "127.0.0.1")):
+        return f"http://{host}"
+    return PUBLIC_APP_URL
+
+
+def destination_share_url(dest_id: int, name: str, days: int | None = None) -> str:
+    url = f"{_app_base_url()}/?meta={slug_for(dest_id, name)}"
+    if days:
+        url += f"&giorni={int(days)}"
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -1290,6 +1829,8 @@ def build_prefs_from_form(values: dict) -> dict:
         "social_preference": values["social_preference"],
         "tags": values["tags"],
         "departure_city": None if values["departure_city"] == "altro" else values["departure_city"],
+        "travel_mode": values.get("travel_mode", "best"),
+        "headcount": PEOPLE_HEADCOUNT.get(values["people"], 2),
         # 1 = nessun filtro (vedi render_questionnaire): lo teniamo come None
         # per non far apparire un filtro attivo quando non lo è.
         "min_ease": values.get("min_ease") if values.get("min_ease", 1) > 1 else None,
@@ -1314,6 +1855,8 @@ def neutral_prefs() -> dict:
         "social_preference": "indifferente",
         "tags": [],
         "departure_city": None,
+        "travel_mode": "best",
+        "headcount": 2,
         "min_ease": None,
     }
 
@@ -1330,7 +1873,10 @@ def _prepared_df() -> pd.DataFrame:
     Se il filtro azzerasse i risultati lo ignoriamo: meglio mostrare mete
     "più impegnative" che una pagina vuota senza spiegazione."""
     prefs = st.session_state["prefs"]
-    return _prepared_df_for(prefs.get("departure_city"), prefs.get("min_ease"))
+    return _prepared_df_for(
+        prefs.get("departure_city"), prefs.get("min_ease"),
+        prefs.get("travel_mode", "best"), prefs.get("headcount", 2),
+    )
 
 
 # Cache: il dataset è statico e dipende solo dalla città di partenza e dal
@@ -1345,8 +1891,25 @@ def _cached_destinations() -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def _prepared_df_for(departure_city: str | None, min_ease: int | None) -> pd.DataFrame:
-    df = adjust_destinations_for_departure(_cached_destinations(), departure_city)
+def _travel_df_for(departure_city: str | None, travel_mode: str = "best", headcount: int = 2) -> pd.DataFrame:
+    """Tutte le mete, con costi e ore di viaggio del mezzo preferito da quella
+    città. Senza filtri: la usano le pagine che mostrano qualunque meta
+    (pagina meta, vetrina, Esplora), dove una meta non deve mai sparire."""
+    return apply_travel(_cached_destinations(), departure_city, travel_mode, headcount)
+
+
+@st.cache_data(show_spinner=False)
+def _prepared_df_for(
+    departure_city: str | None, min_ease: int | None, travel_mode: str = "best", headcount: int = 2,
+) -> pd.DataFrame:
+    # Chi vuole solo treno o solo auto riceve consigli solo tra le mete che
+    # si raggiungono così.
+    df = _travel_df_for(departure_city, travel_mode, headcount)
+    if departure_city:
+        # La città da cui si parte non è una vacanza: chi parte da Roma non
+        # deve vedersi consigliare Roma.
+        away = df[df["travel_mode"] != "home"]
+        df = keep_reachable(away if not away.empty else df, travel_mode)
     if min_ease:
         df = df.copy()
         df["organizational_ease"] = df.apply(organizational_ease, axis=1)
@@ -1380,7 +1943,303 @@ def recompute_trips() -> None:
 # Landing
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Vetrina: tessere fotografiche della home e di Esplora
+# ---------------------------------------------------------------------------
+# Una tessera è una foto con titolo sopra; tutta la superficie è cliccabile
+# grazie a un pulsante Streamlit vero, steso sopra la foto e reso invisibile
+# via CSS (vedi .tm-tile in inject_css). Un <a href> ricaricherebbe l'intera
+# app e farebbe perdere la sessione; il pulsante invece è istantaneo e resta
+# raggiungibile da tastiera.
+
+def render_tile(
+    key: str, photo, title: str, subtitle: str, on_click, args: tuple = (),
+    badge: str | None = None, layout: str = "4",
+) -> None:
+    img = f'<img src="{html.escape(photo.tile)}" loading="lazy" alt="">' if photo else ""
+    credit = (
+        f'<span class="tm-tile-credit">📷 {html.escape(photo.author)} · {html.escape(photo.license)}</span>'
+        if photo else ""
+    )
+    badge_html = f'<span class="tm-tile-badge">{html.escape(badge)}</span>' if badge else ""
+    with st.container():
+        st.markdown(
+            f'<div class="tm-tile tm-tile-{layout}">{img}<div class="tm-tile-veil"></div>{credit}{badge_html}'
+            f'<div class="tm-tile-text"><p class="tm-tile-title">{html.escape(title)}</p>'
+            f'<p class="tm-tile-sub">{html.escape(subtitle)}</p></div></div>',
+            unsafe_allow_html=True,
+        )
+        st.button(f"Apri {title}", key=key, on_click=on_click, args=args, use_container_width=True)
+
+
+def render_tile_row(tiles: list[dict], layout: str = "4") -> None:
+    """Tutte le tessere in un'unica riga di colonne: su desktop il CSS le
+    manda a capo (4 o 3 per riga), su telefono diventano una fila da
+    scorrere col dito invece di una colonna lunghissima."""
+    if not tiles:
+        return
+    for col, tile in zip(st.columns(len(tiles)), tiles):
+        with col:
+            render_tile(layout=layout, **tile)
+
+
+def _destination_tile(row: pd.Series, key: str, badge: str | None = None) -> dict:
+    return dict(
+        key=key, photo=photo_for(row["id"]), title=row["name"],
+        subtitle=f"{row['country']} · da {format_price(row['total_cost_min'])}",
+        on_click=open_destination_page, args=(int(row["id"]),), badge=badge,
+    )
+
+
+def _home_df() -> pd.DataFrame:
+    """Prezzi della vetrina: se l'utente ha già scelto una città di partenza
+    usiamo le stime aggiustate per quella, altrimenti quelle generiche."""
+    prefs = st.session_state.get("prefs") or {}
+    return _travel_df_for(prefs.get("departure_city"), prefs.get("travel_mode", "best"), prefs.get("headcount", 2))
+
+
+def _section_head(title: str, subtitle: str) -> None:
+    st.markdown(
+        f'<div class="tm-home-head"><h3>{html.escape(title)}</h3><p>{html.escape(subtitle)}</p></div>',
+        unsafe_allow_html=True,
+    )
+
+
+@safe_render("le mete del mese")
+def render_home_month() -> None:
+    today = dt.date.today().month
+    # Il mese scelto sopravvive al giro "apri una meta → torna in home".
+    if "home_month_w" not in st.session_state:
+        st.session_state["home_month_w"] = st.session_state.get("home_month", today)
+    month = st.session_state.get("home_month_w") or today
+
+    _section_head(f"Dove andare a {MONTH_NAMES[month - 1]}", "Le mete che in quel mese danno il meglio, da tutto il mondo.")
+    order = [(today + i - 1) % 12 + 1 for i in range(12)]
+    picked = st.pills(
+        "Mese", order, format_func=lambda m: MONTH_NAMES[m - 1].capitalize(),
+        key="home_month_w", label_visibility="collapsed",
+    )
+    month = picked or today
+    st.session_state["home_month"] = month
+
+    df = _home_df().set_index("id", drop=False)
+    tiles = [_destination_tile(df.loc[i], f"hm_{month}_{i}") for i in month_picks(df, month) if i in df.index]
+    render_tile_row(tiles, "4")
+    st.button(
+        f"Tutte le mete per {MONTH_NAMES[month - 1]} →", key="hm_all", type="tertiary",
+        on_click=open_explore, kwargs={"month": month},
+    )
+
+
+@safe_render("gli stili di viaggio")
+def render_home_moods() -> None:
+    _section_head("Che viaggio cerchi?", "Parti da come vuoi sentirti: ti mostriamo le mete giuste.")
+    df = _home_df()
+    tiles = []
+    for mood, title, tagline, photo_id in MOOD_SHOWCASE:
+        count = int(df["moods"].apply(lambda ms, m=mood: m in list(ms)).sum())
+        tiles.append(dict(
+            key=f"hmood_{mood}", photo=photo_for(photo_id), title=title, subtitle=tagline,
+            on_click=_explore_by("mood", mood), badge=f"{count} mete",
+        ))
+    render_tile_row(tiles, "4")
+
+
+@safe_render("le zone del mondo")
+def render_home_zones() -> None:
+    _section_head("Esplora per zona", "Dall'Italia dietro casa ai viaggi dall'altra parte del mondo.")
+    df = _home_df()
+    zones = df["country"].map(zone_for)
+    tiles = []
+    for zone in ZONES:
+        in_zone = df[zones == zone]
+        if in_zone.empty:
+            continue
+        tagline, photo_id = ZONE_SHOWCASE.get(zone, ("", None))
+        tiles.append(dict(
+            key=f"hzone_{zone}", photo=photo_for(photo_id) if photo_id else None, title=zone,
+            subtitle=f"{len(in_zone)} mete · da {format_price(in_zone['total_cost_min'].min())}",
+            on_click=_explore_by("zone", zone), badge=None,
+        ))
+    render_tile_row(tiles, "3")
+
+
+def _explore_by(field: str, value):
+    """Callback per le tessere: apre Esplora con un solo filtro già messo."""
+    def _open() -> None:
+        open_explore(**{field: value})
+    return _open
+
+
+@safe_render("come funziona")
+def render_home_how() -> None:
+    _section_head("Come funziona", "Un minuto per le domande, il resto lo facciamo noi.")
+    n_dest = len(_cached_destinations())
+    st.markdown(
+        '<div class="tm-how">'
+        '<div class="tm-how-step"><span class="tm-how-n">1</span><p class="tm-how-t">Rispondi a qualche domanda</p>'
+        '<p class="tm-how-d">Budget, periodo, con chi parti e che viaggio hai in mente. Oppure parti da una foto qui sopra.</p></div>'
+        '<div class="tm-how-step"><span class="tm-how-n">2</span><p class="tm-how-t">Confronta le mete giuste per te</p>'
+        '<p class="tm-how-d">Quanto ti somigliano, quanto costano davvero, quando conviene andarci. Senza sponsor.</p></div>'
+        '<div class="tm-how-step"><span class="tm-how-n">3</span><p class="tm-how-t">Parti con un piano</p>'
+        '<p class="tm-how-d">Itinerario giorno per giorno, cosa prenotare, checklist. E un link da mandare a chi viaggia con te.</p></div>'
+        '</div>'
+        '<div class="tm-trust">'
+        f'<span><b>{n_dest}</b> mete</span>'
+        '<span><b>911</b> luoghi scelti a mano</span>'
+        '<span><b>Nessuno</b> ci paga per consigliarti</span>'
+        f'<span>Itinerari rivisti a <b>{DATA_REVIEWED}</b></span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+_FAQ = [
+    ("È gratis?",
+     "Sì, del tutto. Non serve registrarsi e non ci sono pagamenti."),
+    ("Posso prenotare qui?",
+     "No: TravelMatch ti aiuta a scegliere dove andare e a organizzarti. Voli e hotel li prenoti dove preferisci."),
+    ("Da dove vengono i prezzi?",
+     "Sono stime indicative a persona (volo, alloggio, cibo e attività), costruite su prezzi medi e corrette per la "
+     "stagione. Non sono tariffe in tempo reale: servono a capire l'ordine di grandezza e a confrontare le mete tra loro."),
+    ("Come scegliete le mete da consigliarmi?",
+     "Ogni meta riceve un punteggio in base a quello che cerchi: budget, periodo, durata, tipo di viaggio, clima e "
+     "comodità del volo. Nessuna meta è sponsorizzata e l'ordine non si compra."),
+    ("Cosa succede ai miei dati?",
+     "Niente: le risposte restano nella tua sessione e non vengono salvate da nessuna parte. Se vuoi conservare una "
+     "ricerca, puoi scaricarla sul tuo dispositivo."),
+]
+
+
+def render_home_faq() -> None:
+    _section_head("Domande frequenti", "")
+    for question, answer in _FAQ:
+        with st.expander(question):
+            st.write(answer)
+
+
+# ---------------------------------------------------------------------------
+# Esplora
+# ---------------------------------------------------------------------------
+
+_ANY = "__qualsiasi__"
+
+
+def render_explore() -> None:
+    filters = st.session_state.setdefault("ex_filters", dict(_EXPLORE_DEFAULTS))
+    _scroll_to_top_once()
+    st.button("← Torna alla home", key="ex_back", type="tertiary", on_click=go, args=("landing",))
+    st.markdown(
+        '<div class="tm-page-head"><h2>🧭 Esplora le mete</h2>'
+        '<p>Filtra come vuoi e tocca una meta per foto, itinerario e costi.</p></div>',
+        unsafe_allow_html=True,
+    )
+
+    # "Qualsiasi" è un'opzione vera (_ANY) e non None: con None la tendina
+    # di Streamlit mostrerebbe il segnaposto inglese "Choose an option".
+    fields = [
+        ("exw_month", "month", "Quando", list(range(1, 13)),
+         lambda m: MONTH_NAMES[m - 1].capitalize(), "Qualsiasi mese"),
+        ("exw_mood", "mood", "Che viaggio", list(MOOD_OPTIONS.keys()),
+         lambda k: MOOD_OPTIONS[k], "Qualsiasi stile"),
+        ("exw_zone", "zone", "Dove", ZONES, str, "Tutto il mondo"),
+        ("exw_budget", "budget", "Budget a persona", list(BUDGET_FILTERS.keys()), str, "Qualsiasi budget"),
+        ("exw_days", "days", "Durata", list(DURATION_FILTERS.keys()), str, "Qualsiasi durata"),
+    ]
+    for (key, field, label, values, fmt, any_label), col in zip(fields, st.columns(len(fields))):
+        with col:
+            options = [_ANY] + values
+            # Un valore salvato che non è più tra le opzioni (es. un link
+            # vecchio) torna "qualsiasi" invece di far esplodere il widget.
+            if st.session_state["ex_filters"].get(field) not in values:
+                st.session_state["ex_filters"][field] = None
+            if key not in st.session_state:
+                st.session_state[key] = st.session_state["ex_filters"].get(field) or _ANY
+            choice = st.selectbox(
+                label, options, key=key,
+                format_func=lambda v, f=fmt, a=any_label: a if v == _ANY else f(v),
+            )
+            filters[field] = None if choice == _ANY else choice
+
+    signature = tuple(filters.get(f) for f in ("month", "mood", "zone", "budget", "days", "sort"))
+    if st.session_state.get("ex_signature") != signature:
+        st.session_state["ex_signature"] = signature
+        st.session_state["ex_shown"] = _EXPLORE_PAGE
+
+    results = explore(
+        _home_df(),
+        month=filters.get("month"), mood=filters.get("mood"), zone=filters.get("zone"),
+        budget_max=BUDGET_FILTERS.get(filters.get("budget")),
+        days=DURATION_FILTERS.get(filters.get("days")),
+        sort=filters.get("sort") or "season",
+    )
+
+    count_col, sort_col = st.columns([2, 1.3])
+    with count_col:
+        n = len(results)
+        st.markdown(
+            f'<p class="tm-explore-count"><b>{n}</b> {"meta" if n == 1 else "mete"}</p>',
+            unsafe_allow_html=True,
+        )
+    with sort_col:
+        if "exw_sort" not in st.session_state:
+            st.session_state["exw_sort"] = filters.get("sort") or "season"
+        sort = st.segmented_control(
+            "Ordina", ["season", "price"], key="exw_sort", label_visibility="collapsed",
+            format_func=lambda s: "Di stagione" if s == "season" else "Prezzo più basso",
+        )
+        filters["sort"] = sort or "season"
+
+    if results.empty:
+        st.info("Nessuna meta con tutti questi filtri insieme. Prova a toglierne uno: di solito basta il budget o la durata.", icon="🧭")
+        st.button("Togli tutti i filtri", key="ex_reset", on_click=reset_explore_filters)
+    else:
+        shown = st.session_state.get("ex_shown", _EXPLORE_PAGE)
+        month = filters.get("month")
+        tiles = [
+            _destination_tile(
+                row, f"ex_{int(row['id'])}",
+                badge=f"{row['days_min']}-{row['days_max']} giorni",
+            )
+            for _, row in results.head(shown).iterrows()
+        ]
+        render_tile_row(tiles, "g")
+        if len(results) > shown:
+            if st.button(f"Mostra altre {min(_EXPLORE_PAGE, len(results) - shown)} mete", key="ex_more"):
+                st.session_state["ex_shown"] = shown + _EXPLORE_PAGE
+                st.rerun()
+        if month:
+            st.caption(f"Tutte queste mete hanno {MONTH_NAMES[month - 1]} tra i mesi migliori.")
+
+    st.write("")
+    with st.container(border=True):
+        st.markdown('<span class="tm-card-marker tm-card-marker-light"></span>', unsafe_allow_html=True)
+        st.markdown("**Troppa scelta?** Rispondi a qualche domanda e ti diciamo quali di queste ti somigliano di più.")
+        if st.button("Inizia il questionario", type="primary", key="ex_quiz"):
+            go("questionnaire")
+            st.rerun()
+
+    render_feedback_footer()
+
+
+def render_feedback_footer() -> None:
+    """In fondo alle pagine principali: un solo link discreto verso il
+    modulo dei commenti. Non compare se FEEDBACK_URL è vuoto."""
+    if not FEEDBACK_URL:
+        return
+    st.write("")
+    _, mid, _ = st.columns([1, 2, 1])
+    with mid:
+        st.link_button(
+            "💬 Dicci cosa ne pensi o segnala un problema", FEEDBACK_URL, use_container_width=True,
+        )
+
+
 def render_landing() -> None:
+    notice = st.session_state.pop("url_notice", None)
+    if notice:
+        st.info(notice, icon="🧭")
+
     # Hero centrato e volutamente scarno: una promessa in una riga sola.
     # Tutto il "come funziona" è stato tolto — si capisce facendo, non
     # leggendo, e il testo lungo era la cosa che appesantiva di più la home.
@@ -1448,6 +2307,15 @@ def render_landing() -> None:
                 if st.button(label, use_container_width=True, key=f"quick_{key}"):
                     handle_quick_start(key)
 
+    # Vetrina: per chi non ha ancora voglia di rispondere a domande. Stesso
+    # ordine dei grandi siti di viaggio — prima ispirazione (mese, stile,
+    # zona), poi come funziona e perché fidarsi, infine le domande frequenti.
+    render_home_month()
+    render_home_moods()
+    render_home_zones()
+    render_home_how()
+    render_home_faq()
+
     st.write("")
     _, loader, _ = st.columns([1, 2, 1])
     with loader:
@@ -1458,6 +2326,8 @@ def render_landing() -> None:
             )
             if uploaded is not None:
                 handle_load_saved_upload(uploaded)
+
+    render_feedback_footer()
 
 
 def handle_quick_start(key: str) -> None:
@@ -1492,6 +2362,7 @@ def handle_quick_start(key: str) -> None:
         prefs = neutral_prefs()
         st.session_state["prefs"] = prefs
         st.session_state["dna"] = compute_travel_dna(prefs)
+        st.session_state["direct_pick"] = None
         recompute_results()
         go("surprise_direct")
         st.rerun()
@@ -1533,6 +2404,69 @@ def handle_quick_start(key: str) -> None:
     st.rerun()
 
 
+def _sanitize_saved_prefs(raw) -> dict | None:
+    """Le preferenze lette da un file caricato dall'utente, ricostruite campo
+    per campo sopra quelle neutre: si tengono solo le chiavi note con valori
+    del tipo giusto e tra le opzioni esistenti. Un file vecchio, ritoccato a
+    mano o di un'altra app non deve mai rompere il motore. None se il file
+    non contiene preferenze riconoscibili."""
+    if not isinstance(raw, dict) or "budget_range" not in raw:
+        return None
+    prefs = neutral_prefs()
+
+    def number_pair(value, low, high):
+        try:
+            a, b = (float(x) for x in value)
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(a) and math.isfinite(b)):
+            return None
+        a, b = sorted((max(low, min(high, a)), max(low, min(high, b))))
+        return a, b
+
+    budget = number_pair(raw.get("budget_range"), 0, 100000)
+    if budget is None:
+        return None
+    prefs["budget_range"] = budget
+    days = number_pair(raw.get("duration_range"), 1, 60)
+    if days is not None:
+        prefs["duration_range"] = (int(days[0]), int(days[1]))
+
+    def pick(key, allowed):
+        # `key in raw` prima di tutto: None è un valore ammesso per alcune
+        # chiavi, e un campo assente non va confuso con un None esplicito.
+        if key in raw and raw[key] in allowed:
+            prefs[key] = raw[key]
+
+    def pick_list(key, allowed):
+        if isinstance(raw.get(key), list):
+            prefs[key] = [v for v in raw[key] if v in allowed][:12]
+
+    pick("people", set(PEOPLE_OPTIONS) | {"Indifferente"})
+    pick("traveller_mode", set(TRAVELLER_MODE_LABELS) | {None})
+    pick("period", set(PERIOD_OPTIONS) | {None})
+    pick("intensity", set(INTENSITY_OPTIONS) | {None})
+    pick("area", set(AREA_OPTIONS))
+    pick("comfort", set(COMFORT_OPTIONS))
+    pick("social_preference", set(SOCIAL_PREFERENCE_OPTIONS))
+    pick("departure_city", set(DEPARTURES) | {None})
+    pick("travel_mode", set(TRAVEL_MODE_OPTIONS))
+    pick("max_flight_hours", set(DISTANCE_OPTIONS.values()))
+    pick("min_ease", {None, 2, 3, 4, 5})
+    pick_list("moods", set(MOOD_OPTIONS))
+    pick_list("climate", set(CLIMATE_OPTIONS))
+    pick_list("tags", set(TAG_LABELS))
+    if isinstance(raw.get("custom_months"), list):
+        months = sorted({int(m) for m in raw["custom_months"] if str(m).isdigit() and 1 <= int(m) <= 12})
+        prefs["custom_months"] = months or None
+    try:
+        prefs["social_slider"] = max(0, min(100, int(raw.get("social_slider", 50))))
+        prefs["headcount"] = max(1, min(20, int(raw.get("headcount", 2))))
+    except (TypeError, ValueError):
+        pass
+    return prefs
+
+
 def handle_load_saved_upload(uploaded_file) -> None:
     """Carica una ricerca da un file .json scaricato in precedenza (vedi
     render_sidebar). Il file viene solo letto in memoria per questa sessione,
@@ -1542,19 +2476,21 @@ def handle_load_saved_upload(uploaded_file) -> None:
     disco, che sarebbe stato sovrascritto a ogni utente)."""
     try:
         saved = json.load(uploaded_file)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        saved = None
+    prefs = _sanitize_saved_prefs(saved.get("prefs") if isinstance(saved, dict) else None)
+    if prefs is None:
         st.error("Il file non sembra una ricerca TravelMatch valida.")
         return
-    if not saved or "prefs" not in saved:
-        st.error("Il file non sembra una ricerca TravelMatch valida.")
-        return
-    prefs = saved["prefs"]
-    prefs["budget_range"] = tuple(prefs["budget_range"])
-    prefs["duration_range"] = tuple(prefs["duration_range"])
     st.session_state["prefs"] = prefs
-    st.session_state["dna"] = saved.get("dna") or compute_travel_dna(prefs)
-    st.session_state["favorites"] = set(saved.get("favorite_ids", []))
-    st.session_state["trip_favorites"] = set(saved.get("favorite_trip_ids", []))
+    st.session_state["dna"] = compute_travel_dna(prefs)
+    known_ids = set(_cached_destinations()["id"].astype(int))
+    st.session_state["favorites"] = {
+        int(i) for i in (saved.get("favorite_ids") or []) if str(i).isdigit() and int(i) in known_ids
+    }
+    st.session_state["trip_favorites"] = {
+        str(t) for t in (saved.get("favorite_trip_ids") or []) if isinstance(t, (str, int))
+    }
     recompute_results()
     go("results")
     st.success("Preferenze caricate! Ecco di nuovo i tuoi risultati. 🎉")
@@ -1620,10 +2556,10 @@ def render_questionnaire() -> None:
             with c1:
                 budget_band = st.select_slider(
                     "Fascia di budget", options=list(BUDGET_BANDS.keys()),
-                    value="1.000 - 1.500 €", key="q_budget_band",
+                    key="q_budget_band", **_default_kwargs("q_budget_band", value="1.000 - 1.500 €"),
                 )
             with c2:
-                budget_scope = st.radio("Il budget è:", ["Per persona", "Totale per il gruppo"], index=0, key="q_budget_scope")
+                budget_scope = st.radio("Il budget è:", ["Per persona", "Totale per il gruppo"], key="q_budget_scope", **_default_kwargs("q_budget_scope", index=0))
 
         with _question_card(2, "👥 Con chi parti, e da dove?"):
             people = st.radio(
@@ -1631,11 +2567,19 @@ def render_questionnaire() -> None:
                 **_default_kwargs("q_people", index=1),
             )
             departure_city = st.radio(
-                "Città di partenza", list(DEPARTURE_CITY_OPTIONS.keys()), horizontal=True,
+                "Da dove parti?", list(DEPARTURE_CITY_OPTIONS.keys()), horizontal=True,
                 format_func=lambda k: DEPARTURE_CITY_OPTIONS[k], key="q_departure_city",
-                **_default_kwargs("q_departure_city", index=2),
+                **_default_kwargs("q_departure_city", index=3),
             )
-            st.caption("Milano o Roma affinano le stime di volo.")
+            travel_mode = st.radio(
+                "Come preferisci viaggiare?", list(TRAVEL_MODE_OPTIONS.keys()), horizontal=True,
+                format_func=lambda k: TRAVEL_MODE_OPTIONS[k], key="q_travel_mode",
+                **_default_kwargs("q_travel_mode", index=0),
+            )
+            st.caption(
+                "Da Milano, Bergamo o Roma calcoliamo tempi e costi porta a porta di aereo, treno, auto e traghetto. "
+                "Scegliendo treno o auto ti proponiamo solo mete che si raggiungono così."
+            )
 
         with _question_card(3, "📅 Quando vuoi partire?"):
             period = st.selectbox(
@@ -1681,14 +2625,21 @@ def render_questionnaire() -> None:
             )
             c3, c4 = st.columns(2)
             with c3:
-                area = st.selectbox("Area geografica", list(AREA_OPTIONS.keys()), index=3, format_func=lambda k: AREA_OPTIONS[k], key="q_area")
+                area = st.selectbox(
+                    "Area geografica", list(AREA_OPTIONS.keys()), format_func=lambda k: AREA_OPTIONS[k],
+                    key="q_area", **_default_kwargs("q_area", index=3),
+                )
             with c4:
-                distance = st.selectbox("Volo massimo", list(DISTANCE_OPTIONS.keys()), index=4, key="q_distance")
+                distance = st.selectbox(
+                    "Viaggio massimo (solo andata)", list(DISTANCE_OPTIONS.keys()),
+                    key="q_distance", **_default_kwargs("q_distance", index=4),
+                )
 
         with _question_card(7, "🏨 Comfort e socialità"):
             comfort = st.select_slider(
                 "Livello di comfort desiderato", options=list(COMFORT_OPTIONS.keys()),
-                value="comfort", format_func=lambda k: COMFORT_OPTIONS[k], key="q_comfort",
+                format_func=lambda k: COMFORT_OPTIONS[k], key="q_comfort",
+                **_default_kwargs("q_comfort", value="comfort"),
             )
             social_slider = st.slider(
                 "0 = per conto mio · 100 = conoscere gente ogni giorno",
@@ -1697,8 +2648,9 @@ def render_questionnaire() -> None:
             )
             social_preference = st.selectbox(
                 "Con chi preferisci socializzare?",
-                list(SOCIAL_PREFERENCE_OPTIONS.keys()), index=3,
+                list(SOCIAL_PREFERENCE_OPTIONS.keys()),
                 format_func=lambda k: SOCIAL_PREFERENCE_OPTIONS[k], key="q_social_pref",
+                **_default_kwargs("q_social_pref", index=3),
             )
 
         with _question_card(8, "🏷️ Qualcosa che non può mancare?",
@@ -1709,9 +2661,9 @@ def render_questionnaire() -> None:
             )
             min_ease = st.select_slider(
                 "Quanto vuoi che sia semplice da organizzare?",
-                options=[1, 2, 3, 4, 5], value=1,
+                options=[1, 2, 3, 4, 5],
                 format_func=lambda v: "Non importa" if v == 1 else f"Almeno {ease_stars(v)}",
-                key="q_min_ease",
+                key="q_min_ease", **_default_kwargs("q_min_ease", value=1),
             )
             st.caption("Filtra le mete che richiedono più organizzazione (visti, più scali, meno infrastruttura turistica).")
 
@@ -1725,7 +2677,7 @@ def render_questionnaire() -> None:
             moods=moods, intensity=intensity, climate=climate, area=area,
             distance=distance, comfort=comfort, social_slider=social_slider,
             social_preference=social_preference, tags=tags, departure_city=departure_city,
-            min_ease=min_ease,
+            travel_mode=travel_mode, min_ease=min_ease,
         )
         prefs = build_prefs_from_form(values)
         st.session_state["prefs"] = prefs
@@ -1746,6 +2698,10 @@ def render_questionnaire() -> None:
         # silenzio l'intera sezione destinazioni senza che sia ovvio perché.
         st.session_state.pop("results_view_mode", None)
         st.session_state.pop("destination_display_mode", None)
+        # Arrivati da "Costruisci il mio viaggio": si apre direttamente sui
+        # viaggi combinati, che è quello che la scorciatoia promette.
+        if st.session_state.pop("trip_mode_hint", False):
+            st.session_state["results_view_mode"] = "Combinati"
         recompute_results()
         go("results")
         st.rerun()
@@ -1813,6 +2769,7 @@ def current_prefs() -> dict:
     return st.session_state.get("prefs") or {}
 
 
+@safe_render("le alternative")
 def render_anti_fomo(lines: list[str]) -> None:
     """Anti-FOMO leggero: 1-2 alternative valutate ma non mostrate, con una
     ragione onesta — così chi guarda i risultati non si chiede "ma ha
@@ -1833,6 +2790,7 @@ def _overage_label(cost_econ: float, budget_max: float | None) -> str:
     return f" · +{overage_pct}% sul budget" if overage_pct > 0 else ""
 
 
+@safe_render("le idee oltre budget")
 def render_over_budget_destinations(
     over_budget: pd.DataFrame, budget_max: float | None, scored_all: pd.DataFrame | None = None,
 ) -> None:
@@ -1866,6 +2824,7 @@ def render_over_budget_destinations(
                     st.caption(line)
 
 
+@safe_render("i viaggi oltre budget")
 def render_over_budget_trips(over_budget: pd.DataFrame, budget_max: float | None) -> None:
     """Stesso principio di render_over_budget_destinations, per i viaggi
     combinati: mai mescolati ai risultati principali, sempre etichettati."""
@@ -1969,30 +2928,40 @@ def _is_high_season(row: pd.Series, months: list[int] | None) -> bool:
     return seasonal_cost_factor(row.get("seasonal_profile", "city"), months) >= 1.15
 
 
-def render_standard_itinerary(row: pd.Series, dest_id: int, key_suffix: str) -> None:
+@safe_render("l'itinerario")
+def render_standard_itinerary(row: pd.Series, dest_id: int, key_suffix: str, on_page: bool = False) -> None:
     """Expander "Itinerario classico": mobilità, zone, giorno per giorno,
     cosa prenotare e la logica dietro il ritmo scelto.
 
     Non è un itinerario personalizzato sulle preferenze: è la traccia
     standard della meta, quella che serve per capire "cosa ci faccio in N
-    giorni" prima ancora di sapere se è la meta giusta."""
+    giorni" prima ancora di sapere se è la meta giusta.
+
+    Sulla pagina meta (on_page) parte aperto — lì è il contenuto principale —
+    e la durata scelta finisce nel link condivisibile (&giorni=N)."""
     prefs = current_prefs()
     months = requested_months(prefs)
 
     variants = curated_variants(row)
 
-    with st.expander("🗺️ Itinerario classico"):
+    with st.expander("🗺️ Itinerario classico", expanded=on_page):
         # --- Durata: solo dove esistono itinerari curati per piu' durate --
         chosen_days = None
         if variants:
+            days_key = f"itin_days_{dest_id}_{key_suffix}"
+            variant_days = [v["days"] for v in variants]
+            if on_page and st.session_state.get("page_days") in variant_days and days_key not in st.session_state:
+                st.session_state[days_key] = st.session_state["page_days"]
             chosen_days = st.radio(
                 "Durata",
-                [v["days"] for v in variants],
+                variant_days,
                 format_func=lambda d: f"{d} giorni",
                 horizontal=True,
-                key=f"itin_days_{dest_id}_{key_suffix}",
+                key=days_key,
                 label_visibility="collapsed",
             )
+            if on_page:
+                st.session_state["page_days"] = chosen_days
 
         style = st.radio(
             "Stile",
@@ -2092,6 +3061,7 @@ def _render_itinerary_body(plan: dict) -> None:
     )
 
 
+@safe_render("l'itinerario del viaggio")
 def render_trip_itinerary(trip: pd.Series, rank: int | None, surprise: bool) -> None:
     """Itinerario giorno per giorno di un viaggio combinato: ogni tappa è una
     base, e i luoghi sono quelli curati delle singole mete. Non compare se
@@ -2371,12 +3341,101 @@ def _render_destination_explanation(row: pd.Series) -> None:
         st.warning(f"Piccolo compromesso su: {reasons}. Il resto però convince parecchio.")
 
 
-def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: bool, dest_id: int) -> None:
+# --- Come arrivarci -----------------------------------------------------------
+
+def _row_value(row, key: str, default=None):
+    value = row.get(key, default) if hasattr(row, "get") else default
+    return default if value is None or (isinstance(value, float) and value != value) else value
+
+
+def travel_icon(row) -> str:
+    mode = _row_value(row, "travel_mode", "plane")
+    return "🏠" if mode == "home" else MODES.get(mode, MODES["plane"])[0]
+
+
+def row_travel_label(row) -> str:
+    """Come si arriva a questa meta col mezzo scelto nel questionario."""
+    hours = _row_value(row, "travel_hours", row["flight_hours"])
+    return travel_label(_row_value(row, "travel_mode"), float(hours), current_prefs().get("departure_city"))
+
+
+def travel_cost_label(row) -> str:
+    return {
+        "plane": "Volo", "train": "Treno", "car": "Auto (carburante e pedaggi)",
+        "ferry": "Auto e traghetto", "home": "Viaggio",
+    }.get(_row_value(row, "travel_mode", "plane"), "Viaggio")
+
+
+@safe_render("il confronto tra i mezzi")
+def render_travel_comparison(row: pd.Series, key_suffix: str) -> None:
+    """Confronto porta a porta tra i mezzi per arrivare alla meta. Città e
+    numero di persone si cambiano qui sul posto (partono da quelli del
+    questionario), così il confronto serve anche a chi arriva da un link."""
+    dest_id = int(row["id"])
+    prefs = current_prefs()
+    st.markdown('<p class="tm-section-title">Come arrivarci</p>', unsafe_allow_html=True)
+
+    city_key, people_key = f"tc_city_{dest_id}_{key_suffix}", f"tc_people_{dest_id}_{key_suffix}"
+    default_city = prefs.get("departure_city") if prefs.get("departure_city") in DEPARTURES else "milano"
+    default_people = int(prefs.get("headcount") or 2)
+    city_col, people_col = st.columns([2.2, 1])
+    with city_col:
+        city = st.segmented_control(
+            "Parti da", list(DEPARTURES), format_func=lambda c: DEPARTURES[c]["label"],
+            key=city_key, **_default_kwargs(city_key, default=default_city),
+        )
+    with people_col:
+        people = st.selectbox(
+            "Quanti siete", list(range(1, 9)), key=people_key,
+            format_func=lambda n: "1 persona" if n == 1 else f"{n} persone",
+            **_default_kwargs(people_key, index=min(max(default_people, 1), 8) - 1),
+        )
+    city = city or default_city
+
+    raw = _cached_destinations()
+    base = raw[raw["id"] == dest_id]
+    options = travel_options(base.iloc[0], city, people) if not base.empty else []
+    if not options:
+        here = dest_id in COORDS and distance_km(DEPARTURES[city]["coords"], COORDS[dest_id]) < 20
+        st.caption(
+            f"Parti già da {DEPARTURES[city]['label']}: non serve viaggiare." if here
+            else f"Da {DEPARTURES[city]['label']} non c'è un collegamento sensato da stimare."
+        )
+        return
+
+    cards = []
+    for i, opt in enumerate(options):
+        icon, name = MODES[opt["mode"]]
+        tags = "".join(f'<span class="tm-travel-tag">{html.escape(t)}</span>' for t in opt.get("tags", []))
+        group = ""
+        if people > 1:
+            group = (
+                f'<p class="tm-travel-group">{format_price_range(opt["cost_min"] * people, opt["cost_max"] * people)} '
+                f'in {people}</p>'
+            )
+        cards.append(
+            f'<div class="tm-travel-card{" tm-travel-best" if i == 0 else ""}">'
+            f'<div class="tm-travel-top"><span class="tm-travel-mode">{icon} {name}</span>{tags}</div>'
+            f'<p class="tm-travel-time">{flight_hours_label(opt["door_hours"])}<span> porta a porta</span></p>'
+            f'<p class="tm-travel-cost">{format_price_range(opt["cost_min"], opt["cost_max"])}'
+            f'<span> a persona, A/R</span></p>{group}'
+            f'<p class="tm-travel-note">{html.escape(opt["note"])}</p></div>'
+        )
+    st.markdown(f'<div class="tm-travel-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+    st.caption(
+        "Tempi porta a porta, solo andata; costi a persona, andata e ritorno. Sono stime per confrontare "
+        "i mezzi tra loro, non orari né tariffe reali."
+    )
+
+
+def _render_destination_detail_body(
+    row: pd.Series, rank: int | None, surprise: bool, dest_id: int, on_page: bool = False,
+) -> None:
     """Tutto ciò che sta sotto "Perché fa per te": avvisi, Travel Style, WOW,
     costi+scenari, info pratiche, pro/contro, checklist, export e azioni.
-    Condiviso identico tra vista compatta (dentro l'expander di dettaglio) e
-    vista dettagliata (sempre visibile), così le due modalità mostrano
-    sempre esattamente lo stesso contenuto — cambia solo il contenitore."""
+    Condiviso identico tra vista compatta (dentro l'expander di dettaglio),
+    vista dettagliata (sempre visibile) e pagina meta, così mostrano sempre
+    esattamente lo stesso contenuto — cambia solo il contenitore."""
     prefs = current_prefs()
     render_contextual_warnings(destination_warnings(row, prefs))
 
@@ -2390,7 +3449,7 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
     render_typical_day(row)
     # L'itinerario classico sta subito dopo la giornata tipo: quella dà il
     # sapore di una giornata, questo dice cosa ci si fa in tutto il viaggio.
-    render_standard_itinerary(row, dest_id, f"{rank}_{surprise}")
+    render_standard_itinerary(row, dest_id, "page" if on_page else f"{rank}_{surprise}", on_page=on_page)
 
     st.markdown('<p class="tm-section-title">⭐ Esperienze WOW</p>', unsafe_allow_html=True)
     for wow in row["wow_experiences"][:3]:
@@ -2403,6 +3462,8 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
         st.markdown('<p class="tm-section-title">Dove dormire, per come viaggi</p>', unsafe_allow_html=True)
         st.caption(stay_hint)
 
+    render_travel_comparison(row, "page" if on_page else f"{rank}_{surprise}")
+
     cost_col, info_col = st.columns([1.3, 1])
     with cost_col:
         st.markdown('<p class="tm-section-title">Costo indicativo / persona</p>', unsafe_allow_html=True)
@@ -2412,7 +3473,7 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
         st.markdown('<p class="tm-section-title">Info pratiche</p>', unsafe_allow_html=True)
         st.markdown(f"🌡️ {format_temp_range(row['temp_min'], row['temp_max'])}")
         st.markdown(f"🗓️ {row['days_min']}-{row['days_max']} giorni consigliati")
-        st.markdown(f"✈️ {flight_duration_label(row['flight_hours'], current_prefs().get('departure_city'))}")
+        st.markdown(f"{travel_icon(row)} {row_travel_label(row)}")
         st.markdown(f"👥 Social: {social_dots(row['social_level'] * 20)}")
         ease = organizational_ease(row)
         st.markdown(f"🧭 Facilità organizzativa: {ease_stars(ease)} ({ease}/5)")
@@ -2420,22 +3481,16 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
     # Il dettaglio voce-per-voce interessa a chi sta già facendo i conti:
     # collassato di default, così la card resta leggibile a colpo d'occhio.
     with st.expander("💰 Dettaglio costi e scenari"):
-        st.markdown(f'<p class="tm-cost-line">✈️ Volo: {format_price_range(row["flight_cost_min"], row["flight_cost_max"])}</p>', unsafe_allow_html=True)
+        st.markdown(
+            f'<p class="tm-cost-line">{travel_icon(row)} {travel_cost_label(row)}: '
+            f'{format_price_range(row["flight_cost_min"], row["flight_cost_max"])}</p>',
+            unsafe_allow_html=True,
+        )
         st.markdown(f'<p class="tm-cost-line">🏨 Hotel: {format_price_range(row["hotel_cost_min"], row["hotel_cost_max"])}</p>', unsafe_allow_html=True)
         st.markdown(f'<p class="tm-cost-line">🍝 Cibo: {format_price_range(row["food_cost_min"], row["food_cost_max"])}</p>', unsafe_allow_html=True)
         st.markdown(f'<p class="tm-cost-line">🎟️ Attività: {format_price_range(row["activity_cost_min"], row["activity_cost_max"])}</p>', unsafe_allow_html=True)
         render_cost_scenarios(row["total_cost_min"], row["total_cost_max"])
 
-        alt_transports = estimate_alternative_transports(row)
-        if alt_transports:
-            st.markdown('<p class="tm-section-title">Alternative al volo</p>', unsafe_allow_html=True)
-            st.caption("Stima indicativa basata sulla distanza, non su orari reali.")
-            for opt in alt_transports:
-                st.markdown(
-                    f"{opt['icon']} **{opt['mode']}**: "
-                    f"{flight_hours_label(opt['hours_min'])}-{flight_hours_label(opt['hours_max'])} · "
-                    f"{format_price_range(opt['cost_min'], opt['cost_max'])}"
-                )
 
     with st.expander("👍 Pro, 👎 Contro e consigli pratici"):
         pc1, pc2 = st.columns(2)
@@ -2461,7 +3516,8 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
                 st.markdown(f"- {item}")
 
     with st.expander("📄 Esporta / 📤 Condividi"):
-        export_text = export_destination_as_text(row, current_budget_max())
+        share_url = destination_share_url(dest_id, row["name"], st.session_state.get("page_days") if on_page else None)
+        export_text = export_destination_as_text(row, current_budget_max(), share_url)
         st.text_area(
             "Riepilogo copiabile (WhatsApp/Telegram)", value=export_text, height=220,
             key=f"dexport_{dest_id}_{rank}_{surprise}", label_visibility="collapsed",
@@ -2477,13 +3533,13 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
 
         st.markdown("**📲 Versione stories**")
         st.text_area(
-            "Testo breve per storie/status", value=export_destination_as_stories(row), height=180,
+            "Testo breve per storie/status", value=export_destination_as_stories(row, share_url), height=180,
             key=f"dstories_{dest_id}_{rank}_{surprise}", label_visibility="collapsed",
         )
 
         st.markdown("**📸 Card social**")
         st.text_area(
-            "Didascalia pronta per i social", value=destination_social_caption(row), height=140,
+            "Didascalia pronta per i social", value=destination_social_caption(row, share_url), height=140,
             key=f"dcaption_{dest_id}_{rank}_{surprise}", label_visibility="collapsed",
         )
         card_image = destination_social_card_image(row)
@@ -2496,6 +3552,10 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
         else:
             st.caption("Immagine non disponibile su questo computer: usa la didascalia qui sopra.")
 
+    # Preferiti e confronto vivono nella pagina risultati: chi arriva da un
+    # link condiviso non ha ancora risultati con cui confrontare.
+    if on_page and st.session_state.get("results_bundle") is None:
+        return
 
     action_cols = st.columns([1, 1, 2])
     with action_cols[0]:
@@ -2519,21 +3579,243 @@ def _render_destination_detail_body(row: pd.Series, rank: int | None, surprise: 
             st.rerun()
 
 
+# --- Foto -------------------------------------------------------------------
+# Le foto sono sfondi CSS e non tag <img>: se un'immagine non si carica
+# (rete lenta, Wikimedia irraggiungibile) resta visibile il gradiente sotto,
+# mai un'icona di immagine rotta. Il velo scuro in basso tiene leggibile il
+# titolo bianco su qualunque foto.
+
+_PHOTO_FALLBACK = "linear-gradient(135deg, #4A90E2 0%, #1A237E 100%)"
+_PHOTO_VEIL = "linear-gradient(180deg, rgba(13,27,75,0.05) 30%, rgba(13,27,75,0.80) 100%)"
+
+
+def _css_url(url: str) -> str:
+    # Apici e virgolette nei nomi file (es. "Ha'penny") romperebbero url('...').
+    return url.replace("'", "%27").replace('"', "%22")
+
+
+def _photo_credit_html(photo) -> str:
+    return (
+        f'<a class="tm-photo-credit" href="{html.escape(photo.source)}" target="_blank" rel="noopener">'
+        f'📷 {html.escape(photo.author)} · {html.escape(photo.license)}</a>'
+    )
+
+
+def render_photo_header(dest_id: int, title: str, subtitle: str, corner_html: str = "", hero: bool = False) -> bool:
+    """Testata fotografica di card (hero=False) o pagina meta (hero=True).
+    Restituisce False se la meta non ha foto, così il chiamante usa la
+    testata testuale di sempre."""
+    photo = photo_for(dest_id)
+    if photo is None:
+        return False
+    url = _css_url(photo.hero if hero else photo.card)
+    css_class = "tm-photo-hero" if hero else "tm-photo-head"
+    st.markdown(
+        f'<div class="{css_class}" style="background-image:{_PHOTO_VEIL}, url(\'{url}\'), {_PHOTO_FALLBACK};">'
+        f'{_photo_credit_html(photo)}'
+        f'<div class="tm-photo-corner">{corner_html}</div>'
+        f'<div class="tm-photo-text"><p class="tm-photo-title">{html.escape(title)}</p>'
+        f'<p class="tm-photo-sub">{html.escape(subtitle)}</p></div></div>',
+        unsafe_allow_html=True,
+    )
+    return True
+
+
+def render_trip_photo_strip(stop_ids: list[int]) -> None:
+    """Viaggio combinato: una striscia con le foto delle tappe, nell'ordine
+    del percorso — si capisce il viaggio prima ancora di leggerlo."""
+    photos = [p for p in (photo_for(i) for i in list(stop_ids)[:4]) if p is not None]
+    if not photos:
+        return
+    tiles = "".join(
+        f'<div class="tm-trip-tile" style="background-image:url(\'{_css_url(p.card)}\'), {_PHOTO_FALLBACK};"></div>'
+        for p in photos
+    )
+    credits = " · ".join(f"{html.escape(p.author)} ({html.escape(p.license)})" for p in photos)
+    st.markdown(
+        f'<div class="tm-trip-strip">{tiles}</div><p class="tm-trip-credit">📷 {credits}</p>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_open_page_button(dest_id: int, key_suffix: str) -> None:
+    st.button(
+        "🔗 Apri la pagina della meta e condividila",
+        key=f"openpage_{dest_id}_{key_suffix}",
+        type="tertiary",
+        on_click=open_destination_page,
+        args=(dest_id,),
+    )
+
+
+def _scroll_to_top_once() -> None:
+    """Aprendo la pagina meta da una card in fondo ai risultati, Streamlit
+    manterrebbe la posizione di scorrimento e si atterrerebbe a metà pagina."""
+    if not st.session_state.pop("page_scroll_top", False):
+        return
+    script = (
+        "<script>"
+        "for (const sel of ['[data-testid=\"stMain\"]', '[data-testid=\"stAppViewContainer\"]', 'section.main']) {"
+        "  const el = document.querySelector(sel); if (el) el.scrollTo({top: 0});"
+        "}"
+        "window.scrollTo({top: 0});"
+        "</script>"
+    )
+    # st.html esegue lo script direttamente nella pagina (niente iframe). Su
+    # versioni di Streamlit che non conoscono ancora l'opzione si rinuncia
+    # allo scorrimento, che è una comodità: mai un errore per questo.
+    with contextlib.suppress(TypeError):
+        st.html(script, unsafe_allow_javascript=True)
+
+
+@safe_render("il riquadro di condivisione")
+def render_share_box(row: pd.Series, days: int | None) -> None:
+    url = destination_share_url(int(row["id"]), row["name"], days)
+    blurb = one_liner(row)
+    with st.container(border=True):
+        st.markdown('<span class="tm-card-marker tm-card-marker-light"></span>', unsafe_allow_html=True)
+        st.markdown("**🔗 Condividi questa meta**")
+        detail = f", con l'itinerario da {days} giorni" if days else ""
+        st.caption(f"Il link apre direttamente questa pagina{detail}. Per copiarlo usa l'icona a destra del riquadro.")
+        st.code(url, language=None)
+        wa, tg, mail = st.columns(3)
+        with wa:
+            st.link_button("WhatsApp", f"https://wa.me/?text={quote(blurb + ' ' + url)}", use_container_width=True)
+        with tg:
+            st.link_button("Telegram", f"https://t.me/share/url?url={quote(url)}&text={quote(blurb)}", use_container_width=True)
+        with mail:
+            st.link_button(
+                "Email",
+                f"mailto:?subject={quote('Idea di viaggio: ' + row['name'])}&body={quote(blurb + chr(10) + chr(10) + url)}",
+                use_container_width=True,
+            )
+
+
+def _page_scored_row(dest_id: int) -> pd.Series | None:
+    """La riga col punteggio di match, se l'utente ha già fatto una ricerca
+    e la meta è tra quelle valutate. Chi arriva da un link non ce l'ha."""
+    bundle = st.session_state.get("results_bundle")
+    if bundle is None or st.session_state.get("prefs") is None:
+        return None
+    scored = bundle["scored_all"]
+    match = scored[scored["id"] == dest_id]
+    return None if match.empty else match.iloc[0]
+
+
+_BACK_LABELS = {
+    "results": "Torna ai risultati",
+    "surprise_direct": "Torna alla sorpresa",
+    "gift_surprise": "Torna alla sorpresa",
+    "controlled_surprise": "Torna alla sorpresa",
+    "my_trips": "Torna ai tuoi viaggi",
+    "explore": "Torna a Esplora",
+}
+
+
+def render_destination_page() -> None:
+    dest_id = st.session_state.get("page_dest_id")
+    prefs = current_prefs()
+    df = _travel_df_for(prefs.get("departure_city"), prefs.get("travel_mode", "best"), prefs.get("headcount", 2))
+    match = df[df["id"] == dest_id] if dest_id is not None else df.iloc[0:0]
+    if match.empty:
+        st.session_state["url_notice"] = "Questa meta non è più disponibile. Ti riportiamo alla home."
+        go("landing")
+        st.rerun()
+    scored = _page_scored_row(int(dest_id))
+    row = scored if scored is not None else match.iloc[0]
+
+    _scroll_to_top_once()
+    return_stage = _page_return_target()
+    st.button(
+        f"← {_BACK_LABELS.get(return_stage, 'Torna alla home')}",
+        key="page_back", type="tertiary", on_click=leave_destination_page,
+    )
+
+    # I giorni arrivati da un link valgono solo se esiste quell'itinerario:
+    # "&giorni=99" non deve rompere nulla, si riparte dalla durata standard.
+    variant_days = [v["days"] for v in curated_variants(row)]
+    if st.session_state.get("page_days") not in variant_days:
+        st.session_state["page_days"] = None
+    # La durata scelta nell'itinerario (più in basso) è già nello stato del
+    # widget a inizio esecuzione: leggerla qui tiene il link di condivisione
+    # allineato allo stesso clic, invece che un passo indietro.
+    picked = st.session_state.get(f"itin_days_{int(dest_id)}_page")
+    if picked in variant_days:
+        st.session_state["page_days"] = picked
+    elif st.session_state.get("page_days") is None and variant_days:
+        # Stessa durata che l'itinerario mostra di default (la prima).
+        st.session_state["page_days"] = variant_days[0]
+
+    pill = ""
+    if scored is not None:
+        pill = f'<span class="tm-match-pill" style="background:{score_tier_color(row["match_score"])};">{row["match_score"]:.0f}% MATCH</span>'
+    subtitle = place_label(row["country"], zone_for(row["country"]))
+    if not render_photo_header(int(dest_id), row["name"], subtitle, pill, hero=True):
+        st.markdown(f'<p class="tm-card-title">{html.escape(row["name"].upper())}</p>', unsafe_allow_html=True)
+        st.markdown(f'<p class="tm-card-sub">{html.escape(subtitle)}</p>', unsafe_allow_html=True)
+
+    render_metric_strip(
+        (f"Da {format_price(row['total_cost_min'])}", "a persona"),
+        [
+            (f"{row['days_min']}-{row['days_max']} giorni", "durata"),
+            (row_travel_label(row), "viaggio"),
+            (months_label(list(row["best_months"])) or "—", "periodo migliore"),
+        ],
+    )
+    mood_labels = [MOOD_OPTIONS.get(m, m) for m in row["moods"][:4]]
+    st.markdown(
+        "".join(f'<span class="tm-badge">{m}</span>' for m in mood_labels) + pace_badge_html(row.get("pace")),
+        unsafe_allow_html=True,
+    )
+
+    prefs = current_prefs()
+    if scored is not None:
+        _render_destination_explanation(row)
+    elif prefs and prefs.get("departure_city") in DEPARTURES and (
+        row.get("travel_mode") == "home" or not row.get("travel_available", True)
+    ):
+        # Ha già fatto una ricerca, ma questa meta ne è rimasta fuori per come
+        # vuole viaggiare: meglio dirlo che proporgli di rifare il questionario.
+        city = DEPARTURES[prefs["departure_city"]]["label"]
+        if row.get("travel_mode") == "home":
+            st.info("È la tua città di partenza: per questo non compare tra i tuoi consigli.", icon="🏠")
+        else:
+            how = "in treno" if prefs.get("travel_mode") == "train" else "in auto"
+            st.info(
+                f"Da {city} non si raggiunge {how}, per questo non è tra i tuoi consigli. "
+                "Qui sotto trovi comunque come arrivarci con gli altri mezzi.",
+                icon="🧭",
+            )
+    else:
+        with st.container(border=True):
+            st.markdown('<span class="tm-card-marker tm-card-marker-light"></span>', unsafe_allow_html=True)
+            st.markdown("**Fa per te?** Rispondi a qualche domanda e scopri quanto ti somiglia, insieme alle mete che potrebbero piacerti ancora di più.")
+            if st.button("Scoprilo con il questionario", type="primary", key="page_to_quiz"):
+                go("questionnaire")
+                st.rerun()
+
+    render_share_box(row, st.session_state.get("page_days"))
+    _render_destination_detail_body(row, None, False, int(dest_id), on_page=True)
+    render_feedback_footer()
+
+
+@safe_render(lambda row, *a, **k: f"la scheda di {row['name']}")
 def render_destination_card(row: pd.Series, rank: int | None = None, surprise: bool = False, compact: bool = True) -> None:
     dest_id = int(row["id"])
     with st.container(border=True):
         st.markdown('<span class="tm-card-marker tm-card-marker-primary"></span>', unsafe_allow_html=True)
-        header_cols = st.columns([5, 1.4])
-        with header_cols[0]:
-            medal = medal_for_rank(rank) if rank is not None else ("🎲" if surprise else "🔹")
-            st.markdown(f'<p class="tm-card-title">{medal} {row["name"].upper()}</p>', unsafe_allow_html=True)
-            st.markdown(f'<p class="tm-card-sub">{row["country"]} · {row["region"]}</p>', unsafe_allow_html=True)
-        with header_cols[1]:
-            color = score_tier_color(row["match_score"])
-            st.markdown(
-                f'<span class="tm-match-pill" style="background:{color};">{row["match_score"]:.0f}% MATCH</span>',
-                unsafe_allow_html=True,
-            )
+        medal = medal_for_rank(rank) if rank is not None else ("🎲" if surprise else "🔹")
+        color = score_tier_color(row["match_score"])
+        pill = f'<span class="tm-match-pill" style="background:{color};">{row["match_score"]:.0f}% MATCH</span>'
+        if not render_photo_header(
+            dest_id, f"{medal} {row['name'].upper()}", place_label(row["country"], row["region"]), pill,
+        ):
+            header_cols = st.columns([5, 1.4])
+            with header_cols[0]:
+                st.markdown(f'<p class="tm-card-title">{medal} {row["name"].upper()}</p>', unsafe_allow_html=True)
+                st.markdown(f'<p class="tm-card-sub">{place_label(row["country"], row["region"])}</p>', unsafe_allow_html=True)
+            with header_cols[1]:
+                st.markdown(pill, unsafe_allow_html=True)
 
         if compact:
             # Vista compatta: 2-3 tag, riga di metriche chiave, 1 riga di
@@ -2553,17 +3835,19 @@ def render_destination_card(row: pd.Series, rank: int | None = None, surprise: b
                 (f"Da {format_price(row['total_cost_min'])}", "a persona"),
                 [
                     (f"{row['days_min']}-{row['days_max']} giorni", "durata"),
-                    (flight_duration_label(row["flight_hours"], current_prefs().get("departure_city")), "volo"),
+                    (row_travel_label(row), "viaggio"),
                 ],
             )
 
             with st.expander("🔍 Vedi dettaglio completo"):
                 _render_destination_explanation(row)
                 _render_destination_detail_body(row, rank, surprise, dest_id)
+            render_open_page_button(dest_id, f"{rank}_{surprise}")
         else:
             mood_labels = [MOOD_OPTIONS.get(m, m) for m in row["moods"][:4]]
             mood_badges = "".join(f'<span class="tm-badge">{m}</span>' for m in mood_labels)
             st.markdown(mood_badges + pace_badge_html(row.get("pace")), unsafe_allow_html=True)
+            render_open_page_button(dest_id, f"{rank}_{surprise}")
 
             if surprise:
                 st.markdown(
@@ -2599,8 +3883,8 @@ def _render_trip_detail_body(trip: pd.Series, rank: int | None, surprise: bool) 
     with info_col:
         st.markdown('<p class="tm-section-title">Info pratiche</p>', unsafe_allow_html=True)
         st.markdown(f"🗓️ {trip['minimum_days']}-{trip['ideal_days']} giorni (ideale: {trip['ideal_days']})")
-        entry_flight_hours = trip["stops"][0]["flight_hours"]
-        st.markdown(f"✈️ {flight_duration_label(entry_flight_hours, current_prefs().get('departure_city'))}")
+        first_stop = trip["stops"][0]
+        st.markdown(f"{travel_icon(first_stop)} Fino a {first_stop['name']}: {row_travel_label(first_stop)}")
         st.markdown(f"🔀 {flight_hours_label(trip['transfer_time_hours'])} di trasferimento totale")
         st.markdown(f"🧭 Efficienza viaggio: {trip['efficiency_score']:.0f}%")
         ease = trip_organizational_ease(trip)
@@ -2677,9 +3961,11 @@ def _render_trip_detail_body(trip: pd.Series, rank: int | None, surprise: bool) 
             st.rerun()
 
 
+@safe_render(lambda trip, *a, **k: f"il viaggio {trip['name']}")
 def render_trip_card(trip: pd.Series, rank: int | None = None, surprise: bool = False, compact: bool = True) -> None:
     with st.container(border=True):
         st.markdown('<span class="tm-card-marker tm-card-marker-primary"></span>', unsafe_allow_html=True)
+        render_trip_photo_strip(trip["stop_ids"])
         header_cols = st.columns([5, 1.4])
         with header_cols[0]:
             medal = medal_for_rank(rank) if rank is not None else ("🎲" if surprise else "✈️")
@@ -2736,6 +4022,7 @@ def render_trip_card(trip: pd.Series, rank: int | None = None, surprise: bool = 
 # Sezione Natale/Capodanno
 # ---------------------------------------------------------------------------
 
+@safe_render("la sezione Natale e Capodanno")
 def render_christmas_spotlight(scored_all: pd.DataFrame) -> None:
     st.markdown("### 🎄❄️ Natale & Capodanno: due anime, tu scegli")
     cats = get_christmas_categories(scored_all)
@@ -2798,6 +4085,7 @@ def render_refinement_bar() -> None:
 # Confronto
 # ---------------------------------------------------------------------------
 
+@safe_render("il confronto degli itinerari")
 def render_itinerary_comparison(names: pd.DataFrame) -> None:
     """"Cosa farei in N giorni qui vs lì": itinerari della stessa durata
     affiancati. Il punto non è quale meta abbia il punteggio più alto — è
@@ -2835,6 +4123,7 @@ def render_itinerary_comparison(names: pd.DataFrame) -> None:
                     st.markdown(f"**G{day['day']}** — {summary}")
 
 
+@safe_render("il confronto tra le mete")
 def render_comparison(scored_all: pd.DataFrame) -> None:
     ids = list(st.session_state["compare_ids"])
     if len(ids) < 2:
@@ -2869,6 +4158,7 @@ def render_comparison(scored_all: pd.DataFrame) -> None:
     st.divider()
 
 
+@safe_render("il confronto tra i viaggi")
 def render_trip_comparison(candidates_all: pd.DataFrame) -> None:
     trip_ids = list(st.session_state["trip_compare_ids"])
     if len(trip_ids) < 2 or candidates_all is None or candidates_all.empty:
@@ -2989,7 +4279,8 @@ def render_results() -> None:
         view_mode = st.segmented_control(
             "Modalità risultati",
             ["Destinazioni", "Combinati", "Entrambi"],
-            default="Entrambi", key="results_view_mode", label_visibility="collapsed",
+            key="results_view_mode", label_visibility="collapsed",
+            **_default_kwargs("results_view_mode", default="Entrambi"),
         ) or "Entrambi"
     with ctrl_display:
         display_mode = st.segmented_control(
@@ -3004,9 +4295,16 @@ def render_results() -> None:
     show_trips = view_mode != "Destinazioni"
     compact = display_mode == "Compatta"
 
-    departure_city = st.session_state["prefs"].get("departure_city")
-    if departure_city:
-        st.caption(f"Stime di volo per partenze da {DEPARTURE_CITY_OPTIONS[departure_city].split(' ', 1)[-1]}.")
+    prefs_now = st.session_state["prefs"]
+    departure_city = prefs_now.get("departure_city")
+    if departure_city in DEPARTURES:
+        mode = prefs_now.get("travel_mode", "best")
+        how = {
+            "best": "col mezzo più conveniente per ogni meta",
+            "plane": "in aereo", "train": "solo mete raggiungibili in treno",
+            "car": "solo mete raggiungibili in auto (anche con traghetto)",
+        }.get(mode, "")
+        st.caption(f"Tempi e costi di viaggio calcolati da {DEPARTURES[departure_city]['label']}, {how}.")
 
     if surprise_clicked:
         handle_surprise(results, trip_results, scored_all, trip_bundle, show_destinations, show_trips)
@@ -3079,13 +4377,21 @@ def render_results() -> None:
             reset_to_landing()
             st.rerun()
 
+    render_feedback_footer()
+
 
 def render_surprise_direct() -> None:
     st.markdown("## 🎲 Non hai idea? Ci pensiamo noi.")
     render_travel_dna()
     bundle = st.session_state["results_bundle"]
     scored_all = bundle["scored_all"]
-    pick = surprise_me(scored_all, min_score=55.0)
+    # La scelta si fa una volta sola e resta: prima veniva ripescata a ogni
+    # rerun, quindi bastava cambiare la durata dell'itinerario o aggiungere
+    # la meta ai preferiti perché la sorpresa diventasse un'altra meta.
+    pick = st.session_state.get("direct_pick")
+    if pick is None:
+        pick = surprise_me(scored_all, min_score=55.0)
+        st.session_state["direct_pick"] = pick
     if pick is None:
         st.error("Non siamo riusciti a trovare una destinazione. Prova il questionario completo!")
         return
@@ -3325,6 +4631,8 @@ def render_sidebar() -> None:
             '<p class="tm-sidebar-tag">Il tuo motore di viaggi, offline.</p>',
             unsafe_allow_html=True,
         )
+        if st.session_state.get("stage") != "explore":
+            st.button("🧭 Esplora tutte le mete", use_container_width=True, key="sb_explore", on_click=open_explore)
 
         # Travel DNA sempre sott'occhio: è il filo che lega questionario e
         # risultati, e tenerlo solo dentro un expander della pagina risultati
@@ -3388,37 +4696,67 @@ def render_sidebar() -> None:
             reset_to_landing()
             st.rerun()
 
+        if FEEDBACK_URL:
+            st.link_button("💬 Dicci cosa ne pensi", FEEDBACK_URL, use_container_width=True)
+
         st.divider()
         n_destinations = len(_cached_destinations())
-        st.caption(f"TravelMatch v2.0 — dataset locale, {n_destinations} destinazioni + Trip Builder, nessuna connessione richiesta.")
+        st.caption(
+            f"TravelMatch v2.0 — dataset locale, {n_destinations} destinazioni + Trip Builder. "
+            "Foto da Wikimedia Commons, con licenze libere: autore e licenza su ogni immagine."
+        )
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
+_PAGES = {
+    "destination": lambda: render_destination_page(),
+    "explore": lambda: render_explore(),
+    "landing": lambda: render_landing(),
+    "questionnaire": lambda: render_questionnaire(),
+    "results": lambda: render_results(),
+    "my_trips": lambda: render_my_trips(),
+    "controlled_surprise": lambda: render_controlled_surprise(),
+    "surprise_direct": lambda: render_surprise_direct(),
+    "gift_surprise": lambda: render_gift_surprise(),
+}
+
+
+def render_error_page() -> None:
+    """Ultima rete: una pagina intera che si rompe diventa un messaggio con
+    una via d'uscita, non una schermata di codice."""
+    st.markdown(
+        '<div class="tm-page-head"><h2>Ops, qualcosa si è inceppato</h2>'
+        "<p>Non è colpa tua. Puoi ripartire dalla home: le tue risposte andranno rifatte, "
+        "ma ci vuole un minuto.</p></div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("🏠 Torna alla home", type="primary", key="error_home"):
+        reset_to_landing()
+        st.rerun()
+    if FEEDBACK_URL:
+        st.link_button("Segnalaci cosa stavi facendo", FEEDBACK_URL)
+
+
 def main() -> None:
     init_state()
     inject_css()
-    render_sidebar()
+    _route_from_url()
+    with safe_block("il menu laterale"):
+        render_sidebar()
 
     stage = st.session_state["stage"]
-    if stage == "landing":
-        render_landing()
-    elif stage == "questionnaire":
-        render_questionnaire()
-    elif stage == "results":
-        render_results()
-    elif stage == "my_trips":
-        render_my_trips()
-    elif stage == "controlled_surprise":
-        render_controlled_surprise()
-    elif stage == "surprise_direct":
-        render_surprise_direct()
-    elif stage == "gift_surprise":
-        render_gift_surprise()
-    else:
-        render_landing()
+    try:
+        _PAGES.get(stage, _PAGES["landing"])()
+    except Exception:
+        if _STRICT:
+            raise
+        _log.exception("Errore nella pagina %s", stage)
+        render_error_page()
+
+    _sync_url()
 
 
 if __name__ == "__main__":

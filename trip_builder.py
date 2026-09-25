@@ -786,6 +786,13 @@ def get_top_trips(
     if exclude_stopsets:
         candidates = candidates[~candidates["stop_ids"].apply(lambda ids: frozenset(ids) in exclude_stopsets)]
 
+    # Chi ha scelto di viaggiare solo in treno o in auto non vuole un volo
+    # interno tra una tappa e l'altra: quei viaggi non vengono proposti.
+    if prefs.get("departure_city") and prefs.get("travel_mode") in ("train", "car"):
+        candidates = candidates[
+            candidates["edges"].apply(lambda edges: all(e.get("transport_mode") != "volo" for e in edges))
+        ]
+
     in_budget = candidates[candidates["within_budget_buffer"]]
     over_budget = candidates[~candidates["within_budget_buffer"]].sort_values("overall_score", ascending=False)
 

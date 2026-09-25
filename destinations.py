@@ -1410,11 +1410,15 @@ RAW_DESTINATIONS = [
        warm_score=80, temperate_score=30, cold_score=15, snow_score=1,
        christmas_score=15, new_year_score=35,
        temp_min=10, temp_max=28,
-       flight_cost_min=0, flight_cost_max=0,
+       # Nessun volo diretto: si vola su Marrakech (70-240 €, ~3h10) e si
+       # prosegue su strada (60-110 €, vedi la rotta 42->66 in trip_routes).
+       # Con volo a 0 la meta risultava "da 120 €" e passava il filtro dei
+       # voli brevi, cosa falsa per chi parte dall'Italia.
+       flight_cost_min=130, flight_cost_max=350,
        hotel_cost_min=50, hotel_cost_max=340,
        food_cost_min=30, food_cost_max=150,
        activity_cost_min=40, activity_cost_max=240,
-       days_min=2, days_max=3, flight_hours=0,
+       days_min=2, days_max=3, flight_hours=3.17,
        best_months=[3,4,10,11],
        wow_experiences=["Notte in campo tendato tra le dune di Erg Chebbi", "Trekking in cammello all'alba", "Cielo stellato senza inquinamento luminoso"],
        pros=["Esperienza del deserto autentica e indimenticabile", "Cieli stellati spettacolari", "Perfetto completamento di un giro del Marocco"],
